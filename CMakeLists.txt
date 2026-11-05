@@ -18,7 +18,15 @@ add_library(physics STATIC
 target_include_directories(physics PUBLIC src)
 target_compile_options(physics PRIVATE -Wall -Wextra)
 
+# Scenes only touch the physics core, so they are tested headless too.
+add_library(scenes STATIC src/scenes/scenes.cpp)
+target_link_libraries(scenes PUBLIC physics)
+target_compile_options(scenes PRIVATE -Wall -Wextra)
+
 enable_testing()
 add_executable(physics_tests tests/physics_tests.cpp)
 target_link_libraries(physics_tests PRIVATE physics)
 add_test(NAME physics COMMAND physics_tests)
+add_executable(scene_tests tests/scene_tests.cpp)
+target_link_libraries(scene_tests PRIVATE scenes)
+add_test(NAME scenes COMMAND scene_tests)
