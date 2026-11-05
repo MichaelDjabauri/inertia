@@ -380,10 +380,10 @@ int App::run() {
     }
     if (options_.report) {
         const phys::WorldStats& s = scene_.world.stats();
-        std::printf("scene=%s tool=%d bodies=%d joints=%d paused=%d settings=%d gravity=%.2f time=%.2f ppm=%.1f ui=%d heat=%d\n",
+        std::printf("scene=%s tool=%d bodies=%d joints=%d paused=%d settings=%d gravity=%.2f time=%.2f zoom=%.2f ui=%d heat=%d\n",
                     scene::sceneList()[sceneIndex_].name, static_cast<int>(tool_), s.bodies, s.joints, paused_ ? 1 : 0,
                     showSettings_ ? 1 : 0, static_cast<double>(gravityScale_), static_cast<double>(timeScale_),
-                    static_cast<double>(view_.pixelsPerMetre), showUi_ ? 1 : 0, heatView_ ? 1 : 0);
+                    static_cast<double>(userZoom_), showUi_ ? 1 : 0, heatView_ ? 1 : 0);
     }
     return 0;
 #endif
