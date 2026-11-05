@@ -140,7 +140,9 @@ private:
     float statTimer_ = 0.0f;
     int statFrames_ = 0;
     double benchPhysics_ = 0.0;
+#if !defined(__EMSCRIPTEN__)
     double benchRender_ = 0.0;
     double benchWorst_ = 0.0;
     int benchFrames_ = 0;
+#endif
 };
