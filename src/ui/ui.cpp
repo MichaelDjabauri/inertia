@@ -51,11 +51,13 @@ void Ui::unload() {
     for (TypeFace& t : faces_) UnloadFont(t.font);
 }
 
-void Ui::beginFrame(Pipeline& pipeline, Canvas& canvas, float dt, float dpi, Col accent, const Pointer& pointer) {
+void Ui::beginFrame(Pipeline& pipeline, Canvas& canvas, float dt, float dpi, Vec2 screen, Col accent,
+                    const Pointer& pointer) {
     pipeline_ = &pipeline;
     canvas_ = &canvas;
     dt_ = dt;
     dpi_ = dpi;
+    screen_ = screen;
     accent_ = accent;
     mouse_ = pointer.position;
     pressed_ = pointer.leftPressed;
@@ -85,8 +87,7 @@ bool Ui::wantsMouse(Vec2 mouse) const {
 }
 
 void Ui::panel(Box2 box, float radius) {
-    pipeline_->frostedPanel(box.x, box.y, box.w, box.h, radius, dpi_, static_cast<float>(GetScreenWidth()),
-                            static_cast<float>(GetScreenHeight()), uiHex(0x0C0E14), 0.62f);
+    pipeline_->frostedPanel(box.x, box.y, box.w, box.h, radius, dpi_, screen_.x, screen_.y, uiHex(0x0C0E14), 0.62f);
     panelsThisFrame_.push_back(box);
 }
 

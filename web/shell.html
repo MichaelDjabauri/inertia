@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Inertia</title>
+  <link rel="icon" href="data:,">
+  <meta name="description" content="A 2D rigid-body physics sandbox written in C++ and running in your browser.">
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #07080c;
+      color: #f3f5f9;
+      font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    /* The app sizes its pixels to match whatever size this rule produces. */
+    canvas {
+      position: fixed;
+      inset: 0;
+      display: block;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #status {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+      text-align: center;
+      color: rgba(243, 245, 249, 0.62);
+    }
+    #status[hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas" aria-label="Inertia physics simulation" oncontextmenu="event.preventDefault()"></canvas>
+  <div id="status" role="status">Loading…</div>
+  <noscript>Inertia needs JavaScript and WebGL 2 to run.</noscript>
+  <script>
+    const statusBox = document.getElementById('status');
+
+    function fail(message) {
+      statusBox.textContent = message;
+      statusBox.hidden = false;
+    }
+
+    if (!document.createElement('canvas').getContext('webgl2')) {
+      fail('Inertia needs WebGL 2, which this browser or device has turned off.');
+    }
+
+    // Browsers only allow full screen during the key press itself, not a frame later. The
+    // whole page goes full screen, so the app sees it like any other resize.
+    addEventListener('keydown', (event) => {
+      if (event.code !== 'KeyF' || event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+      const page = document.documentElement;
+      const change = document.fullscreenElement ? document.exitFullscreen() : page.requestFullscreen?.();
+      change?.catch(() => {});
+    });
+
+    // index.html?scene=8 opens on a particular scene.
+    const scene = new URLSearchParams(location.search).get('scene');
+
+    var Module = {
+      canvas: document.getElementById('canvas'),
+      arguments: scene ? ['--scene', scene] : [],
+      onRuntimeInitialized() { statusBox.hidden = true; },
+      onAbort() { fail('Inertia stopped unexpectedly. Reloading the page may help.'); },
+    };
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>

@@ -37,7 +37,9 @@ public:
     void load(const char* fontDir, float dpi);
     void unload();
 
-    void beginFrame(Pipeline& pipeline, Canvas& canvas, float dt, float dpi, Col accent, const Pointer& pointer);
+    // `screen` is the window size in UI points.
+    void beginFrame(Pipeline& pipeline, Canvas& canvas, float dt, float dpi, Vec2 screen, Col accent,
+                    const Pointer& pointer);
 
     // True if the pointer is over any panel from the last frame, so the world should ignore it.
     bool wantsMouse(Vec2 mouse) const;
@@ -70,6 +72,7 @@ private:
     Canvas* canvas_ = nullptr;
     float dt_ = 0.0f;
     float dpi_ = 1.0f;
+    Vec2 screen_;
     Col accent_;
     Vec2 mouse_;
     bool pressed_ = false;

@@ -1,16 +1,22 @@
 #include "app.hpp"
 
 #include <algorithm>
-#include <unistd.h>
-
 #include <chrono>
 #include <cmath>
-#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 
 #include "raylib.h"
 #include "rlgl.h"
+
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#include <emscripten/html5.h>
+#else
+#include <unistd.h>
+
+#include <csignal>
+#endif
 
 using gfx::Box2;
 using gfx::Col;
@@ -27,6 +33,8 @@ constexpr float kStep = 1.0f / 60.0f;
 constexpr int kMaxStepsPerFrame = 3;
 constexpr float kPanelWidth = 190.0f;
 constexpr float kRowHeight = 27.0f;
+constexpr int kMinWidth = 800;  // the smallest window the interface is laid out for, in UI points
+constexpr int kMinHeight = 560;
 
 const char* const kSceneKeys[12] = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "="};
 const int kSceneKeyCodes[12] = {KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE, KEY_SIX,
@@ -41,6 +49,30 @@ double secondsNow() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+#if defined(__EMSCRIPTEN__)
+
+struct CanvasSize {
+    int width = 0;  // device pixels
+    int height = 0;
+    float pointScale = 1.0f;
+};
+
+// The page's CSS decides how big the canvas looks. Its pixel buffer has to follow by hand,
+// because raylib's own web resizing ignores high-density screens and would blur the image.
+CanvasSize measureCanvas() {
+    double cssWidth = 0.0;
+    double cssHeight = 0.0;
+    emscripten_get_element_css_size("#canvas", &cssWidth, &cssHeight);
+    const double ratio = emscripten_get_device_pixel_ratio();
+    // Below the interface's minimum size, shrink it rather than let it overlap.
+    const double fit = std::min({1.0, cssWidth / kMinWidth, cssHeight / kMinHeight});
+    return {std::max(static_cast<int>(std::lround(cssWidth * ratio)), 1),
+            std::max(static_cast<int>(std::lround(cssHeight * ratio)), 1),
+            std::max(static_cast<float>(ratio * fit), 0.1f)};
+}
+
+#else
+
 // raylib 5.5's InitWindow ignores a failed window creation and goes on to call null OpenGL
 // functions. That can happen for a moment while a display wakes or reconfigures, so during
 // startup a segfault means no window. Only write and _exit are safe inside a signal handler.
@@ -50,6 +82,8 @@ void onWindowFailure(int) {
     _exit(1);
 }
 
+#endif
+
 }  // namespace
 
 App::App(const Options& options) : options_(options) {
@@ -57,25 +91,11 @@ App::App(const Options& options) : options_(options) {
     showUi_ = !options.hideUi;
     showSettings_ = options.showSettings;
 
-    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_WINDOW_HIGHDPI | (capture_ ? 0 : FLAG_VSYNC_HINT));
     SetTraceLogLevel(LOG_ERROR);
-    const auto previousHandler = std::signal(SIGSEGV, onWindowFailure);
-    InitWindow(options.width > 0 ? options.width : 1280, options.height > 0 ? options.height : 800, "Inertia");
-    std::signal(SIGSEGV, previousHandler);
-    if (!IsWindowReady()) onWindowFailure(0);
+    openWindow();
     SetExitKey(KEY_NULL);
 
-    if (options.width == 0) {
-        // Fit comfortably on whatever display this opened on.
-        const int monitor = GetCurrentMonitor();
-        const int w = std::min(1440, static_cast<int>(static_cast<float>(GetMonitorWidth(monitor)) * 0.86f));
-        const int h = std::min(900, static_cast<int>(static_cast<float>(GetMonitorHeight(monitor)) * 0.86f));
-        SetWindowSize(w, h);
-        SetWindowPosition((GetMonitorWidth(monitor) - w) / 2, (GetMonitorHeight(monitor) - h) / 2);
-    }
-    SetWindowMinSize(800, 560);
-
-    dpi_ = GetWindowScaleDPI().x;
+    dpi_ = GetWindowScaleDPI().x * pointScale_;
     if (options.renderScale > 0.0f) {
         renderScale_ = options.renderScale;
         autoResolution_ = false;
@@ -83,8 +103,7 @@ App::App(const Options& options) : options_(options) {
     sceneDpi_ = dpi_ * renderScale_;
     pipeline_.load(static_cast<int>(static_cast<float>(GetRenderWidth()) * renderScale_),
                    static_cast<int>(static_cast<float>(GetRenderHeight()) * renderScale_));
-    const std::string fonts = std::string(GetApplicationDirectory()) + "assets/fonts";
-    ui_.load(fonts.c_str(), dpi_);
+    loadFonts();
 
     sceneIndex_ = std::clamp(options.scene, 0, static_cast<int>(scene::sceneList().size()) - 1);
     loadScene(sceneIndex_);
@@ -106,6 +125,67 @@ App::~App() {
     ui_.unload();
     pipeline_.unload();
     CloseWindow();
+}
+
+#if defined(__EMSCRIPTEN__)
+
+void App::openWindow() {
+    const CanvasSize canvas = measureCanvas();
+    pointScale_ = canvas.pointScale;
+    // No resize or high-DPI flags: followCanvas does that job, in device pixels.
+    InitWindow(canvas.width, canvas.height, "Inertia");
+
+    // WebGL keeps drawing into float textures switched off until it's asked for.
+    const EMSCRIPTEN_WEBGL_CONTEXT_HANDLE context = emscripten_webgl_get_current_context();
+    emscripten_webgl_enable_extension(context, "EXT_color_buffer_float");
+    emscripten_webgl_enable_extension(context, "EXT_color_buffer_half_float");
+}
+
+// Polled every frame, because browser zoom can change the scale without changing the pixels.
+void App::followCanvas() {
+    const CanvasSize canvas = measureCanvas();
+    const bool rescaled = canvas.pointScale != pointScale_;
+    pointScale_ = canvas.pointScale;
+    if (canvas.width != GetRenderWidth() || canvas.height != GetRenderHeight()) {
+        SetWindowSize(canvas.width, canvas.height);
+    } else if (rescaled) {
+        resizeTargets();
+    }
+}
+
+#else
+
+void App::openWindow() {
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_WINDOW_HIGHDPI | (capture_ ? 0 : FLAG_VSYNC_HINT));
+    const auto previousHandler = std::signal(SIGSEGV, onWindowFailure);
+    InitWindow(options_.width > 0 ? options_.width : 1280, options_.height > 0 ? options_.height : 800, "Inertia");
+    std::signal(SIGSEGV, previousHandler);
+    if (!IsWindowReady()) onWindowFailure(0);
+
+    if (options_.width == 0) {
+        // Fit comfortably on whatever display this opened on.
+        const int monitor = GetCurrentMonitor();
+        const int w = std::min(1440, static_cast<int>(static_cast<float>(GetMonitorWidth(monitor)) * 0.86f));
+        const int h = std::min(900, static_cast<int>(static_cast<float>(GetMonitorHeight(monitor)) * 0.86f));
+        SetWindowSize(w, h);
+        SetWindowPosition((GetMonitorWidth(monitor) - w) / 2, (GetMonitorHeight(monitor) - h) / 2);
+    }
+    SetWindowMinSize(kMinWidth, kMinHeight);
+}
+
+void App::followCanvas() {}
+
+#endif
+
+void App::loadFonts() {
+    if (fontDpi_ > 0.0f) ui_.unload();
+    fontDpi_ = dpi_;
+    const std::string fonts = std::string(GetApplicationDirectory()) + "assets/fonts";
+    ui_.load(fonts.c_str(), dpi_);
+}
+
+Vec2 App::screenPoints() const {
+    return {static_cast<float>(GetScreenWidth()) / pointScale_, static_cast<float>(GetScreenHeight()) / pointScale_};
 }
 
 // Scripted input lets captures exercise the real input paths. Events are separated by
@@ -187,7 +267,7 @@ void App::readPointer() {
         return;
     }
     const Vector2 mouse = GetMousePosition();
-    pointer_.position = {mouse.x, mouse.y};
+    pointer_.position = {mouse.x / pointScale_, mouse.y / pointScale_};
     pointer_.wheel = GetMouseWheelMove();
     pointer_.leftPressed = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
     pointer_.leftDown = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
@@ -241,10 +321,13 @@ void App::applyGravity() {
 float App::stageInset() const { return kPanelWidth * sceneDpi_ * insetAnim_; }
 
 void App::resizeTargets() {
-    dpi_ = GetWindowScaleDPI().x;
+    dpi_ = GetWindowScaleDPI().x * pointScale_;
     sceneDpi_ = dpi_ * renderScale_;
     pipeline_.resize(static_cast<int>(static_cast<float>(GetRenderWidth()) * renderScale_),
                      static_cast<int>(static_cast<float>(GetRenderHeight()) * renderScale_));
+    // Fonts are baked for one scale, and text goes soft if the window lands on another. The
+    // margin stops a slow browser resize from rebuilding them every frame.
+    if (std::abs(dpi_ / fontDpi_ - 1.0f) > 0.1f) loadFonts();
 }
 
 // A Retina panel on integrated graphics can't always fill every pixel with HDR bloom.
@@ -264,12 +347,19 @@ void App::adaptResolution(float dt) {
 }
 
 float App::fitScale() const {
-    float scale = view_.height / scene_.viewHeight;
-    if (scene_.viewWidth > 0.0f) scale = std::min(scale, (view_.width - stageInset()) / scene_.viewWidth);
-    return scale;
+    // Scenes without a set width are framed for a landscape stage, which keeps them whole
+    // on a phone held upright.
+    const float viewWidth = scene_.viewWidth > 0.0f ? scene_.viewWidth : scene_.viewHeight * 1.1f;
+    return std::min(view_.height / scene_.viewHeight, (view_.width - stageInset()) / viewWidth);
 }
 
 int App::run() {
+#if defined(__EMSCRIPTEN__)
+    // The browser owns the loop and calls back once per display refresh. Passing true leaves
+    // main() suspended rather than returned, so the App on its stack stays alive.
+    emscripten_set_main_loop_arg([](void* app) { static_cast<App*>(app)->frame(); }, this, 0, true);
+    return 0;
+#else
     while (!WindowShouldClose()) {
         const double start = secondsNow();
         frame();
@@ -290,12 +380,13 @@ int App::run() {
     }
     if (options_.report) {
         const phys::WorldStats& s = scene_.world.stats();
-        std::printf("scene=%s tool=%d bodies=%d joints=%d paused=%d settings=%d gravity=%.2f time=%.2f ppm=%.1f ui=%d heat=%d\n",
+        std::printf("scene=%s tool=%d bodies=%d joints=%d paused=%d settings=%d gravity=%.2f time=%.2f zoom=%.2f ui=%d heat=%d\n",
                     scene::sceneList()[sceneIndex_].name, static_cast<int>(tool_), s.bodies, s.joints, paused_ ? 1 : 0,
                     showSettings_ ? 1 : 0, static_cast<double>(gravityScale_), static_cast<double>(timeScale_),
-                    static_cast<double>(view_.pixelsPerMetre), showUi_ ? 1 : 0, heatView_ ? 1 : 0);
+                    static_cast<double>(userZoom_), showUi_ ? 1 : 0, heatView_ ? 1 : 0);
     }
     return 0;
+#endif
 }
 
 void App::frame() {
@@ -316,6 +407,7 @@ void App::frame() {
         fade_ = std::min(fade_ + dt / 0.28f, 1.0f);
     }
 
+    followCanvas();
     if (IsWindowResized()) resizeTargets();
     adaptResolution(dt);
 
@@ -350,10 +442,12 @@ void App::frame() {
     updateCamera(dt);
     render();
 
-    statTimer_ += dt;
+    statTimer_ += GetFrameTime();
+    ++statFrames_;
     if (statTimer_ > 0.3f) {
+        statFps_ = static_cast<float>(statFrames_) / statTimer_;
         statTimer_ = 0.0f;
-        statFps_ = static_cast<float>(GetFPS());
+        statFrames_ = 0;
         statPhysicsMs_ = scene_.world.stats().collideMs + scene_.world.stats().solveMs;
     }
 }
@@ -371,7 +465,9 @@ void App::handleKeys() {
     if (keyHit(KEY_B)) bloomOn_ = !bloomOn_;
     if (keyHit(KEY_C)) debugOn_ = !debugOn_;
     if (keyHit(KEY_V)) heatView_ = !heatView_;
-    if (keyHit(KEY_F)) ToggleBorderlessWindowed();
+#if !defined(__EMSCRIPTEN__)
+    if (keyHit(KEY_F)) ToggleBorderlessWindowed();  // the page handles this key on the web
+#endif
     if (keyHit(KEY_Q)) tool_ = Tool::Grab;
 
     const int count = static_cast<int>(scene::sceneList().size());
@@ -689,13 +785,15 @@ void App::render() {
 
     BeginDrawing();
     ClearBackground(BLACK);
+    rlScalef(pointScale_, pointScale_, 1.0f);  // everything from here on is in UI points
 
     gfx::CompositeParams composite;
     composite.bloomAmount = bloomOn_ ? scene_.style.bloom : 0.0f;
     composite.fade = fade_;
     composite.vignette = 0.5f;
     composite.time = wallTime_;
-    pipeline_.present(composite, static_cast<float>(GetScreenWidth()), static_cast<float>(GetScreenHeight()));
+    const Vec2 screen = screenPoints();
+    pipeline_.present(composite, screen.x, screen.y);
 
     if (showUi_) drawHud();
 
@@ -711,10 +809,11 @@ void App::render() {
 
 void App::drawHud() {
     const Col accent = gfx::uiHex(scene::sampleRamp(scene_.style.ramp, 0.3f));
-    ui_.beginFrame(pipeline_, canvas_, frameDt_, dpi_, accent, pointer_);
+    const Vec2 screen = screenPoints();
+    ui_.beginFrame(pipeline_, canvas_, frameDt_, dpi_, screen, accent, pointer_);
 
-    const auto screenW = static_cast<float>(GetScreenWidth());
-    const auto screenH = static_cast<float>(GetScreenHeight());
+    const float screenW = screen.x;
+    const float screenH = screen.y;
     const Col ink = gfx::uiHex(0xF3F5F9);
     const Col inkDim = gfx::uiHex(0xF3F5F9, 0.6f);
     const Col inkFaint = gfx::uiHex(0xF3F5F9, 0.4f);

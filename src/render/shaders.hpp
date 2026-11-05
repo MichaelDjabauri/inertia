@@ -1,5 +1,14 @@
-// GLSL for the HDR pipeline. Everything targets the OpenGL 3.3 core profile.
+// GLSL for the HDR pipeline. The same source runs on desktop OpenGL 3.3 and on WebGL 2,
+// so it sticks to the rules of GLSL ES 3.00, the stricter of the two: no implicit
+// conversion from int to float, for one.
 #pragma once
+
+#if defined(__EMSCRIPTEN__)
+// Samplers default to low precision in ES, which would clip HDR values.
+#define INERTIA_GLSL "#version 300 es\nprecision highp float;\nprecision highp sampler2D;\n"
+#else
+#define INERTIA_GLSL "#version 330\n"
+#endif
 
 namespace gfx::shaders {
 
@@ -26,7 +35,7 @@ vec3 toSrgb(vec3 c) {
 }
 )"
 
-inline const char* kBackground = R"(#version 330
+inline const char* kBackground = INERTIA_GLSL R"(
 out vec4 finalColor;
 uniform vec2 uResolution;
 uniform vec2 uCamera;
@@ -89,7 +98,7 @@ void main() {
 )";
 
 // Vertex colours are 8-bit, so emissive layers scale them up here to exceed 1.0.
-inline const char* kBoost = R"(#version 330
+inline const char* kBoost = INERTIA_GLSL R"(
 in vec4 fragColor;
 out vec4 finalColor;
 uniform float uBoost;
@@ -100,7 +109,7 @@ void main() {
 
 // 13-tap downsample from Jimenez, "Next Generation Post Processing in Call of
 // Duty: Advanced Warfare". Avoids the shimmering of a plain box filter.
-inline const char* kDownsample = R"(#version 330
+inline const char* kDownsample = INERTIA_GLSL R"(
 in vec2 fragTexCoord;
 out vec4 finalColor;
 uniform sampler2D texture0;
@@ -111,17 +120,17 @@ vec3 tap(float x, float y) {
 }
 
 void main() {
-    vec3 a = tap(-2, 2), b = tap(0, 2), c = tap(2, 2);
-    vec3 d = tap(-2, 0), e = tap(0, 0), f = tap(2, 0);
-    vec3 g = tap(-2, -2), h = tap(0, -2), i = tap(2, -2);
-    vec3 j = tap(-1, 1), k = tap(1, 1), l = tap(-1, -1), m = tap(1, -1);
+    vec3 a = tap(-2.0, 2.0), b = tap(0.0, 2.0), c = tap(2.0, 2.0);
+    vec3 d = tap(-2.0, 0.0), e = tap(0.0, 0.0), f = tap(2.0, 0.0);
+    vec3 g = tap(-2.0, -2.0), h = tap(0.0, -2.0), i = tap(2.0, -2.0);
+    vec3 j = tap(-1.0, 1.0), k = tap(1.0, 1.0), l = tap(-1.0, -1.0), m = tap(1.0, -1.0);
     vec3 color = e * 0.125 + (a + c + g + i) * 0.03125 + (b + d + f + h) * 0.0625 + (j + k + l + m) * 0.125;
     finalColor = vec4(color, 1.0);
 }
 )";
 
 // 3x3 tent, the matching upsample. Each level is added on top of the one above it.
-inline const char* kUpsample = R"(#version 330
+inline const char* kUpsample = INERTIA_GLSL R"(
 in vec2 fragTexCoord;
 out vec4 finalColor;
 uniform sampler2D texture0;
@@ -132,14 +141,14 @@ vec3 tap(float x, float y) {
 }
 
 void main() {
-    vec3 color = tap(0, 0) * 4.0;
-    color += (tap(-1, 0) + tap(1, 0) + tap(0, -1) + tap(0, 1)) * 2.0;
-    color += tap(-1, -1) + tap(1, -1) + tap(-1, 1) + tap(1, 1);
+    vec3 color = tap(0.0, 0.0) * 4.0;
+    color += (tap(-1.0, 0.0) + tap(1.0, 0.0) + tap(0.0, -1.0) + tap(0.0, 1.0)) * 2.0;
+    color += tap(-1.0, -1.0) + tap(1.0, -1.0) + tap(-1.0, 1.0) + tap(1.0, 1.0);
     finalColor = vec4(color / 16.0, 1.0);
 }
 )";
 
-inline const char* kComposite = R"(#version 330
+inline const char* kComposite = INERTIA_GLSL R"(
 in vec2 fragTexCoord;
 out vec4 finalColor;
 uniform sampler2D texture0;
@@ -173,7 +182,7 @@ void main() {
 )";
 
 // Frosted glass: the blurred scene behind a panel, darkened and cut to a rounded rectangle.
-inline const char* kFrost = R"(#version 330
+inline const char* kFrost = INERTIA_GLSL R"(
 in vec2 fragTexCoord;
 out vec4 finalColor;
 uniform sampler2D texture0;

@@ -36,6 +36,10 @@ public:
 private:
     enum class Drag { None, Body, Pan, Aim, Pull };
 
+    void openWindow();
+    void followCanvas();
+    void loadFonts();
+    gfx::Vec2 screenPoints() const;
     void loadScene(int index);
     void reset();
     void frame();
@@ -75,7 +79,9 @@ private:
     gfx::Trails trails_;
     gfx::Ui ui_;
     gfx::View view_;
+    float pointScale_ = 1.0f;   // raylib screen units per UI point; only differs from 1 on the web
     float dpi_ = 1.0f;          // window pixels per UI point
+    float fontDpi_ = 0.0f;      // the scale the fonts are baked at
     float renderScale_ = 1.0f;  // scene pixels per window pixel
     float sceneDpi_ = 1.0f;     // scene pixels per UI point
     bool autoResolution_ = true;
@@ -130,11 +136,13 @@ private:
 
     unsigned int spawnSeed_ = 12345;
     float statFps_ = 60.0f;
-    float statFrameMs_ = 16.0f;
     float statPhysicsMs_ = 0.0f;
     float statTimer_ = 0.0f;
+    int statFrames_ = 0;
     double benchPhysics_ = 0.0;
+#if !defined(__EMSCRIPTEN__)
     double benchRender_ = 0.0;
     double benchWorst_ = 0.0;
     int benchFrames_ = 0;
+#endif
 };
