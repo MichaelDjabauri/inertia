@@ -71,18 +71,7 @@ CanvasSize measureCanvas() {
             std::max(static_cast<float>(ratio * fit), 0.1f)};
 }
 
-void toggleFullscreen() {
-    // The whole page goes full screen, so followCanvas sees the new size like any other resize.
-    EM_ASM({
-        const page = document.documentElement;
-        if (document.fullscreenElement) document.exitFullscreen();
-        else if (page.requestFullscreen) page.requestFullscreen();
-    });
-}
-
 #else
-
-void toggleFullscreen() { ToggleBorderlessWindowed(); }
 
 // raylib 5.5's InitWindow ignores a failed window creation and goes on to call null OpenGL
 // functions. That can happen for a moment while a display wakes or reconfigures, so during
@@ -466,7 +455,9 @@ void App::handleKeys() {
     if (keyHit(KEY_B)) bloomOn_ = !bloomOn_;
     if (keyHit(KEY_C)) debugOn_ = !debugOn_;
     if (keyHit(KEY_V)) heatView_ = !heatView_;
-    if (keyHit(KEY_F)) toggleFullscreen();
+#if !defined(__EMSCRIPTEN__)
+    if (keyHit(KEY_F)) ToggleBorderlessWindowed();  // the page handles this key on the web
+#endif
     if (keyHit(KEY_Q)) tool_ = Tool::Grab;
 
     const int count = static_cast<int>(scene::sceneList().size());

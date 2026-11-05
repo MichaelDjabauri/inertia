@@ -54,6 +54,15 @@
       fail('Inertia needs WebGL 2, which this browser or device has turned off.');
     }
 
+    // Browsers only allow full screen during the key press itself, not a frame later. The
+    // whole page goes full screen, so the app sees it like any other resize.
+    addEventListener('keydown', (event) => {
+      if (event.code !== 'KeyF' || event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+      const page = document.documentElement;
+      const change = document.fullscreenElement ? document.exitFullscreen() : page.requestFullscreen?.();
+      change?.catch(() => {});
+    });
+
     // index.html?scene=8 opens on a particular scene.
     const scene = new URLSearchParams(location.search).get('scene');
 
