@@ -347,9 +347,10 @@ void App::adaptResolution(float dt) {
 }
 
 float App::fitScale() const {
-    float scale = view_.height / scene_.viewHeight;
-    if (scene_.viewWidth > 0.0f) scale = std::min(scale, (view_.width - stageInset()) / scene_.viewWidth);
-    return scale;
+    // Scenes without a set width are framed for a landscape stage, which keeps them whole
+    // on a phone held upright.
+    const float viewWidth = scene_.viewWidth > 0.0f ? scene_.viewWidth : scene_.viewHeight * 1.1f;
+    return std::min(view_.height / scene_.viewHeight, (view_.width - stageInset()) / viewWidth);
 }
 
 int App::run() {
