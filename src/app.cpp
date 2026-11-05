@@ -443,10 +443,12 @@ void App::frame() {
     updateCamera(dt);
     render();
 
-    statTimer_ += dt;
+    statTimer_ += GetFrameTime();
+    ++statFrames_;
     if (statTimer_ > 0.3f) {
+        statFps_ = static_cast<float>(statFrames_) / statTimer_;
         statTimer_ = 0.0f;
-        statFps_ = static_cast<float>(GetFPS());
+        statFrames_ = 0;
         statPhysicsMs_ = scene_.world.stats().collideMs + scene_.world.stats().solveMs;
     }
 }

@@ -134,9 +134,9 @@ private:
 
     unsigned int spawnSeed_ = 12345;
     float statFps_ = 60.0f;
-    float statFrameMs_ = 16.0f;
     float statPhysicsMs_ = 0.0f;
     float statTimer_ = 0.0f;
+    int statFrames_ = 0;
     double benchPhysics_ = 0.0;
     double benchRender_ = 0.0;
     double benchWorst_ = 0.0;
