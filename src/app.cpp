@@ -103,8 +103,7 @@ App::App(const Options& options) : options_(options) {
     sceneDpi_ = dpi_ * renderScale_;
     pipeline_.load(static_cast<int>(static_cast<float>(GetRenderWidth()) * renderScale_),
                    static_cast<int>(static_cast<float>(GetRenderHeight()) * renderScale_));
-    const std::string fonts = std::string(GetApplicationDirectory()) + "assets/fonts";
-    ui_.load(fonts.c_str(), dpi_);
+    loadFonts();
 
     sceneIndex_ = std::clamp(options.scene, 0, static_cast<int>(scene::sceneList().size()) - 1);
     loadScene(sceneIndex_);
@@ -177,6 +176,13 @@ void App::openWindow() {
 void App::followCanvas() {}
 
 #endif
+
+void App::loadFonts() {
+    if (fontDpi_ > 0.0f) ui_.unload();
+    fontDpi_ = dpi_;
+    const std::string fonts = std::string(GetApplicationDirectory()) + "assets/fonts";
+    ui_.load(fonts.c_str(), dpi_);
+}
 
 Vec2 App::screenPoints() const {
     return {static_cast<float>(GetScreenWidth()) / pointScale_, static_cast<float>(GetScreenHeight()) / pointScale_};
@@ -319,6 +325,9 @@ void App::resizeTargets() {
     sceneDpi_ = dpi_ * renderScale_;
     pipeline_.resize(static_cast<int>(static_cast<float>(GetRenderWidth()) * renderScale_),
                      static_cast<int>(static_cast<float>(GetRenderHeight()) * renderScale_));
+    // Fonts are baked for one scale, and text goes soft if the window lands on another. The
+    // margin stops a slow browser resize from rebuilding them every frame.
+    if (std::abs(dpi_ / fontDpi_ - 1.0f) > 0.1f) loadFonts();
 }
 
 // A Retina panel on integrated graphics can't always fill every pixel with HDR bloom.

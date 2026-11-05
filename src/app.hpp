@@ -38,6 +38,7 @@ private:
 
     void openWindow();
     void followCanvas();
+    void loadFonts();
     gfx::Vec2 screenPoints() const;
     void loadScene(int index);
     void reset();
@@ -80,6 +81,7 @@ private:
     gfx::View view_;
     float pointScale_ = 1.0f;   // raylib screen units per UI point; only differs from 1 on the web
     float dpi_ = 1.0f;          // window pixels per UI point
+    float fontDpi_ = 0.0f;      // the scale the fonts are baked at
     float renderScale_ = 1.0f;  // scene pixels per window pixel
     float sceneDpi_ = 1.0f;     // scene pixels per UI point
     bool autoResolution_ = true;
