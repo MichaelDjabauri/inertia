@@ -8,24 +8,37 @@
 namespace gfx {
 namespace {
 
-// raylib's own render textures are 8-bit, which would clip every highlight.
-RenderTexture2D makeFloatTarget(int width, int height) {
+// Returns an empty target if the GPU can't draw into this format.
+RenderTexture2D makeTarget(int width, int height, PixelFormat format) {
     RenderTexture2D target{};
     target.id = rlLoadFramebuffer();
     rlEnableFramebuffer(target.id);
 
-    target.texture.id = rlLoadTexture(nullptr, width, height, RL_PIXELFORMAT_UNCOMPRESSED_R16G16B16A16, 1);
+    target.texture.id = rlLoadTexture(nullptr, width, height, format, 1);
     target.texture.width = width;
     target.texture.height = height;
-    target.texture.format = PIXELFORMAT_UNCOMPRESSED_R16G16B16A16;
+    target.texture.format = format;
     target.texture.mipmaps = 1;
 
     rlFramebufferAttach(target.id, target.texture.id, RL_ATTACHMENT_COLOR_CHANNEL0, RL_ATTACHMENT_TEXTURE2D, 0);
-    if (!rlFramebufferComplete(target.id)) TraceLog(LOG_ERROR, "Float render target is incomplete");
+    const bool complete = rlFramebufferComplete(target.id);
     rlDisableFramebuffer();
+    if (!complete) {
+        UnloadRenderTexture(target);
+        return {};
+    }
 
     SetTextureFilter(target.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureWrap(target.texture, TEXTURE_WRAP_CLAMP);
+    return target;
+}
+
+// raylib's own render textures are 8-bit, which would clip every highlight. Some phone GPUs
+// can't draw into float textures at all, and there a flatter image beats a black one.
+RenderTexture2D makeHdrTarget(int width, int height) {
+    RenderTexture2D target = makeTarget(width, height, PIXELFORMAT_UNCOMPRESSED_R16G16B16A16);
+    if (target.id == 0) target = makeTarget(width, height, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    if (target.id == 0) TraceLog(LOG_ERROR, "Could not create a render target");
     return target;
 }
 
@@ -98,12 +111,12 @@ void Pipeline::resize(int width, int height) {
 }
 
 void Pipeline::createTargets() {
-    scene_ = makeFloatTarget(width_, height_);
+    scene_ = makeHdrTarget(width_, height_);
     int w = width_, h = height_;
     for (RenderTexture2D& mip : mips_) {
         w = std::max(w / 2, 2);
         h = std::max(h / 2, 2);
-        mip = makeFloatTarget(w, h);
+        mip = makeHdrTarget(w, h);
     }
 }
 

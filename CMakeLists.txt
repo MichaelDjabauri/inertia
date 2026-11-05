@@ -8,6 +8,11 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# Emscripten turns the same C++ into WebAssembly. Its toolchain sets EMSCRIPTEN.
+if(EMSCRIPTEN)
+  add_link_options(-sALLOW_MEMORY_GROWTH=1 -sSTACK_SIZE=1048576)
+endif()
+
 # The physics core has no graphics dependency, so its tests run headless.
 add_library(physics STATIC
   src/physics/shape.cpp
@@ -27,7 +32,13 @@ target_compile_options(scenes PRIVATE -Wall -Wextra)
 include(FetchContent)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_GAMES OFF CACHE BOOL "" FORCE)
-set(GRAPHICS GRAPHICS_API_OPENGL_33 CACHE STRING "" FORCE)
+if(EMSCRIPTEN)
+  # WebGL 2 is OpenGL ES 3 under another name.
+  set(PLATFORM Web CACHE STRING "" FORCE)
+  set(GRAPHICS GRAPHICS_API_OPENGL_ES3 CACHE STRING "" FORCE)
+else()
+  set(GRAPHICS GRAPHICS_API_OPENGL_33 CACHE STRING "" FORCE)
+endif()
 FetchContent_Declare(raylib
   URL https://github.com/raysan5/raylib/archive/refs/tags/5.5.tar.gz
   URL_HASH SHA256=aea98ecf5bc5c5e0b789a76de0083a21a70457050ea4cc2aec7566935f5e258e
@@ -47,10 +58,27 @@ add_executable(inertia
 target_link_libraries(inertia PRIVATE scenes raylib)
 target_compile_options(inertia PRIVATE -Wall -Wextra)
 
-# Fonts sit next to the binary, so it runs from any working directory.
-add_custom_command(TARGET inertia POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:inertia>/assets
-)
+if(EMSCRIPTEN)
+  # site/ is the whole website: index.html, its .js and .wasm, and the fonts in a .data file.
+  set_target_properties(inertia PROPERTIES
+    OUTPUT_NAME index
+    SUFFIX .html
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/site
+    LINK_DEPENDS ${CMAKE_SOURCE_DIR}/web/shell.html
+  )
+  target_link_options(inertia PRIVATE
+    -sMIN_WEBGL_VERSION=2
+    -sMAX_WEBGL_VERSION=2
+    -sENVIRONMENT=web
+    "SHELL:--shell-file ${CMAKE_SOURCE_DIR}/web/shell.html"
+    "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/assets@/assets"
+  )
+else()
+  # Fonts sit next to the binary, so it runs from any working directory.
+  add_custom_command(TARGET inertia POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:inertia>/assets
+  )
+endif()
 
 enable_testing()
 add_executable(physics_tests tests/physics_tests.cpp)
@@ -59,3 +87,8 @@ add_test(NAME physics COMMAND physics_tests)
 add_executable(scene_tests tests/scene_tests.cpp)
 target_link_libraries(scene_tests PRIVATE scenes)
 add_test(NAME scenes COMMAND scene_tests)
+if(EMSCRIPTEN)
+  # Node runs these, and needs the runtime to shut down to report their exit code.
+  target_link_options(physics_tests PRIVATE -sEXIT_RUNTIME=1)
+  target_link_options(scene_tests PRIVATE -sEXIT_RUNTIME=1)
+endif()
