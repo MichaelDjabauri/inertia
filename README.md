@@ -3,7 +3,7 @@
 A 2D rigid-body physics sandbox in C++20. The solver is written from scratch and
 the only dependency is [raylib](https://www.raylib.com/), which handles the window
 and OpenGL. CMake fetches it into the build folder, so nothing is installed on your
-system.
+system. The same code also compiles to WebAssembly and runs in a browser.
 
 ![The tumbling drum with the settings panel open](docs/hero.jpg)
 
@@ -23,6 +23,27 @@ cmake --build build
 ./build/inertia
 ```
 
+## Run in a browser
+
+[Emscripten](https://emscripten.org/) compiles the same C++ to WebAssembly, and raylib
+draws through WebGL 2 instead of OpenGL. With Emscripten installed:
+
+```sh
+emcmake cmake -S . -B build-web
+cmake --build build-web
+python3 -m http.server --directory build-web/site 8000
+```
+
+Then open <http://localhost:8000>. Opening `index.html` from disk won't work, because
+browsers refuse to load WebAssembly over `file://`. Add `?scene=8` to the address to open
+a particular scene, counting from 0.
+
+### Publish on GitHub Pages
+
+`.github/workflows/pages.yml` builds the site on GitHub's servers, runs the tests, and
+publishes on every push to `main`, so you don't need Emscripten on your own machine. Turn
+it on once, under the repository's **Settings → Pages → Source → GitHub Actions**.
+
 ## Controls
 
 | Input | Action |
@@ -41,7 +62,7 @@ cmake --build build
 | `Tab` | Settings: gravity, time, bounce, substeps |
 | `T` `B` `V` `C` | Trails, bloom, colour by speed, show contacts |
 | `H` | Hide the interface |
-| `F` | Borderless window |
+| `F` | Borderless window, or full screen in a browser |
 | `←` `→` or `A` `D` | Drive (Rover scene) |
 
 ## Scenes
@@ -94,11 +115,23 @@ code. For example, a chain must not stretch more than 8% at a 150:1 mass ratio, 
 ball of the cradle must rise to at least 93% of the release height, and the Galton pile
 must land within 0.3 of the binomial spread.
 
-The interaction tests open a window briefly, so they need a display of at least 1000×640.
+The interaction tests open a window briefly, so they need an awake display of at least 1000×640.
+
+The headless tests also run as WebAssembly, which is how the Pages workflow checks the
+engine before publishing:
+
+```sh
+node build-web/physics_tests.js
+node build-web/scene_tests.js
+```
 
 ## Known limits
 
 - Developed and tested on an Intel Mac only. raylib is cross-platform, but other systems are untested.
+- The browser build has not been compiled or run yet. Its shaders are checked against
+  WebGL 2, but expect some fixes on the first real build.
+- The browser build needs WebGL 2. On phones, the interface is laid out for a desktop
+  window and shrunk to fit, so it's small.
 - Bodies have a single shape, so concave objects need several bodies and joints.
 - A contact chain can't pass restitution along within one step. Newton's Cradle works
   because its balls have a small gap, which gives each collision its own step.
