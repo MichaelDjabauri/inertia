@@ -31,8 +31,15 @@ public:
     void drawHorizon(Canvas& canvas, const std::vector<Vec2>& terrain, const scene::Style& style);
     void drawTerrain(Canvas& canvas, const std::vector<Vec2>& terrain, const scene::Style& style);
     void drawTerrainRim(Canvas& canvas, const std::vector<Vec2>& terrain, const scene::Style& style);
-    void drawGuides(Canvas& canvas, const std::vector<scene::Guide>& guides);
+    // Filled guides and line guides are drawn in separate passes; `fills` picks which.
+    void drawGuides(Canvas& canvas, const std::vector<scene::Guide>& guides, bool fills = false);
+    void drawArrows(Canvas& canvas, const phys::World& world, const std::vector<scene::Arrow>& arrows);
+    void drawMarkers(Canvas& canvas, const phys::World& world, const std::vector<scene::Marker>& markers);
     void drawDebug(Canvas& canvas, const phys::World& world);
+
+    // Where a point attached to a body is drawn this frame, in world units. With body < 0,
+    // `offset` is already a world point.
+    Vec2 anchor(const phys::World& world, int body, Vec2 offset) const;
 
 private:
     struct Item {

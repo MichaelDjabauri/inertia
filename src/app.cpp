@@ -1,10 +1,12 @@
 #include "app.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <string_view>
 
 #include "raylib.h"
 #include "rlgl.h"
@@ -31,14 +33,22 @@ namespace {
 
 constexpr float kStep = 1.0f / 60.0f;
 constexpr int kMaxStepsPerFrame = 3;
-constexpr float kPanelWidth = 190.0f;
-constexpr float kRowHeight = 27.0f;
-constexpr int kMinWidth = 800;  // the smallest window the interface is laid out for, in UI points
-constexpr int kMinHeight = 560;
+constexpr float kListWidth = 190.0f;    // the stage starts this far from the left, in UI points
+constexpr float kLessonWidth = 348.0f;  // and ends this far from the right
+constexpr float kMargin = 14.0f;
+constexpr float kRowHeight = 25.0f;
+constexpr float kSlowMotion = 0.25f;
+constexpr int kMinWidth = 1000;  // the smallest window the interface is laid out for, in UI points
+constexpr int kMinHeight = 600;
 
 const char* const kSceneKeys[12] = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "="};
 const int kSceneKeyCodes[12] = {KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE, KEY_SIX,
                                 KEY_SEVEN, KEY_EIGHT, KEY_NINE, KEY_ZERO, KEY_MINUS, KEY_EQUAL};
+
+const Col kInk = gfx::uiHex(0xF3F5F9);
+const Col kInkSoft = gfx::uiHex(0xF3F5F9, 0.8f);
+const Col kInkDim = gfx::uiHex(0xF3F5F9, 0.6f);
+const Col kInkFaint = gfx::uiHex(0xF3F5F9, 0.4f);
 
 float randomUnit(unsigned int& seed) {
     seed = seed * 1664525u + 1013904223u;
@@ -47,6 +57,75 @@ float randomUnit(unsigned int& seed) {
 
 double secondsNow() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+std::string formatNumber(float v, int decimals) {
+    char buffer[48];
+    std::snprintf(buffer, sizeof buffer, "%.*f", decimals, static_cast<double>(v));
+    std::string text = buffer;
+    // "-0.00" reads as a measurement error; it is really zero.
+    if (text[0] == '-' && text.find_first_not_of("-0.") == std::string::npos) text.erase(0, 1);
+    return text;
+}
+
+// Degrees, percentages and multiples sit right against the number; other units get a space.
+std::string withUnit(const std::string& number, const std::string& unit) {
+    if (unit.empty()) return number;
+    const bool tight = unit.rfind("°", 0) == 0 || unit[0] == '%' || unit.rfind("×", 0) == 0;
+    return number + (tight ? "" : " ") + unit;
+}
+
+std::vector<std::string> splitLines(const char* text) {
+    std::vector<std::string> lines;
+    std::string line;
+    for (const char* p = text; *p != '\0'; ++p) {
+        if (*p == '\n') {
+            lines.push_back(line);
+            line.clear();
+        } else {
+            line += *p;
+        }
+    }
+    if (!line.empty()) lines.push_back(line);
+    return lines;
+}
+
+// What each arrow label in the lessons stands for.
+const char* arrowMeaning(const std::string& label) {
+    if (label == "v") return "velocity";
+    if (label == "vx") return "sideways part of the velocity";
+    if (label == "vy") return "vertical part of the velocity";
+    if (label == "mg") return "weight, the pull of gravity";
+    if (label == "N") return "normal force from the surface";
+    if (label == "f") return "friction";
+    if (label == "T") return "tension";
+    if (label == "p") return "momentum, mass × velocity";
+    if (label == "F") return "the star's gravitational pull";
+    if (label == "−kx") return "spring force";
+    return "";
+}
+
+bool isDark(uint32_t rgb) {
+    const float r = static_cast<float>((rgb >> 16) & 0xFF), g = static_cast<float>((rgb >> 8) & 0xFF),
+                b = static_cast<float>(rgb & 0xFF);
+    return 0.2126f * r + 0.7152f * g + 0.0722f * b < 90.0f;
+}
+
+// 1, 2 or 5 times a power of ten, close to `rough`.
+float niceStep(float rough) {
+    const float power = std::pow(10.0f, std::floor(std::log10(std::max(rough, 1e-9f))));
+    const float f = rough / power;
+    return (f < 1.5f ? 1.0f : f < 3.5f ? 2.0f : f < 7.5f ? 5.0f : 10.0f) * power;
+}
+
+std::string powerLabel(int exponent) {
+    static const char* const digits[] = {"⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"};
+    if (exponent == 0) return "1";
+    if (exponent == 1) return "10";
+    std::string text = "10";
+    if (exponent < 0) text += "⁻";
+    text += digits[std::min(std::abs(exponent), 9)];
+    return text;
 }
 
 #if defined(__EMSCRIPTEN__)
@@ -90,6 +169,7 @@ App::App(const Options& options) : options_(options) {
     capture_ = options.frames > 0;
     showUi_ = !options.hideUi;
     showSettings_ = options.showSettings;
+    lessonTab_ = options.experimentTab ? 1 : 0;
 
     SetTraceLogLevel(LOG_ERROR);
     openWindow();
@@ -105,6 +185,7 @@ App::App(const Options& options) : options_(options) {
                    static_cast<int>(static_cast<float>(GetRenderHeight()) * renderScale_));
     loadFonts();
 
+    lessonValues_.resize(scene::sceneList().size());
     sceneIndex_ = std::clamp(options.scene, 0, static_cast<int>(scene::sceneList().size()) - 1);
     loadScene(sceneIndex_);
     fade_ = capture_ ? 1.0f : 0.0f;
@@ -113,11 +194,9 @@ App::App(const Options& options) : options_(options) {
 
     if (!options.toolName.empty()) {
         const std::string& t = options.toolName;
-        if (t == "ball") tool_ = Tool::Ball;
-        if (t == "box") tool_ = Tool::Box;
-        if (t == "gem") tool_ = Tool::Gem;
-        if (t == "bomb") tool_ = Tool::Bomb;
-        if (t == "pull") tool_ = Tool::Pull;
+        if (t == "inspect") tool_ = Tool::Inspect;
+        if (t == "grab") tool_ = Tool::Grab;
+        if (t == "throw") tool_ = Tool::Throw;
     }
 }
 
@@ -279,33 +358,42 @@ void App::readPointer() {
 }
 
 void App::loadScene(int index) {
+    const bool newLesson = index != sceneIndex_ || frameIndex_ == 0;
     sceneIndex_ = index;
-    scene::loadScene(scene_, index);
+    scene::loadScene(scene_, index, lessonValues_[index]);
+    lessonValues_[index].clear();
+    for (const scene::Param& p : scene_.params) lessonValues_[index].push_back(p.value);
+    paramsDirty_ = false;
+
     effects_.clear();
     trails_.configure(scene_.style.trailLength, scene_.style.trailMinSpeed);
-    tool_ = scene_.startTool;
+    if (newLesson) {
+        tool_ = scene_.startTool;
+        lessonScroll_ = 0.0f;
+        cameraPan_ = {};
+        userZoom_ = 1.0f;
+    }
     drag_ = Drag::None;
     mouseJoint_ = -1;
     grabbedBody_ = -1;
+    selected_ = -1;
     accumulator_ = 0.0f;
     renderAlpha_ = 1.0f;
-    cameraPan_ = {};
-    userZoom_ = 1.0f;
-    input_ = {};
-    lastRingTime_ = -1.0f;
     substepSetting_ = static_cast<float>(scene_.world.substeps);
     applyGravity();
-    scene_.world.minRestitution = bounce_;
+    scene_.measure();
+    plotLo_ = scene_.plot.lo;
+    plotHi_ = scene_.plot.hi;
 
     // Snap the camera, so a new scene doesn't begin with a long pan.
     view_.width = static_cast<float>(pipeline_.width());
     view_.height = static_cast<float>(pipeline_.height());
     insetAnim_ = showUi_ ? 1.0f : 0.0f;
-    view_.originX = (view_.width + stageInset()) * 0.5f;
-    view_.pixelsPerMetre = fitScale();
+    view_.originX = (view_.width + stageLeft() - stageRight()) * 0.5f;
+    view_.pixelsPerMetre = fitScale() * userZoom_;
     cameraFollow_ = scene_.camera;
     if (scene_.follow >= 0) cameraFollow_ = scene_.world.bodies()[scene_.follow].pos + scene_.followLead;
-    view_.centre = cameraFollow_;
+    view_.centre = cameraFollow_ + cameraPan_;
 }
 
 void App::reset() {
@@ -313,12 +401,21 @@ void App::reset() {
     fadingOut_ = true;
 }
 
+void App::changeScene(int index) {
+    if (index == sceneIndex_) return;
+    pendingScene_ = index;
+    fadingOut_ = true;
+}
+
+// Gravity points the way the lesson set it up, at the strength chosen in Settings.
 void App::applyGravity() {
-    scene_.world.gravity = scene_.baseGravity * gravityScale_;
+    const float base = phys::length(scene_.baseGravity);
+    scene_.world.gravity = base > 0.0f ? scene_.baseGravity * (gravity_ / base) : Vec2{};
     scene_.world.wakeAll();
 }
 
-float App::stageInset() const { return kPanelWidth * sceneDpi_ * insetAnim_; }
+float App::stageLeft() const { return kListWidth * sceneDpi_ * insetAnim_; }
+float App::stageRight() const { return kLessonWidth * sceneDpi_ * insetAnim_; }
 
 void App::resizeTargets() {
     dpi_ = GetWindowScaleDPI().x * pointScale_;
@@ -347,10 +444,16 @@ void App::adaptResolution(float dt) {
 }
 
 float App::fitScale() const {
-    // Scenes without a set width are framed for a landscape stage, which keeps them whole
-    // on a phone held upright.
+    // Scenes without a set width are framed for a landscape stage.
     const float viewWidth = scene_.viewWidth > 0.0f ? scene_.viewWidth : scene_.viewHeight * 1.1f;
-    return std::min(view_.height / scene_.viewHeight, (view_.width - stageInset()) / viewWidth);
+    const float stageWidth = std::max(view_.width - stageLeft() - stageRight(), view_.width * 0.25f);
+    return std::min(view_.height / scene_.viewHeight, stageWidth / viewWidth);
+}
+
+const Body* App::selectedBody() const {
+    if (selected_ < 0 || selected_ >= static_cast<int>(scene_.world.bodies().size())) return nullptr;
+    const Body& b = scene_.world.bodies()[selected_];
+    return b.alive && b.serial == selectedSerial_ ? &b : nullptr;
 }
 
 int App::run() {
@@ -380,10 +483,14 @@ int App::run() {
     }
     if (options_.report) {
         const phys::WorldStats& s = scene_.world.stats();
-        std::printf("scene=%s tool=%d bodies=%d joints=%d paused=%d settings=%d gravity=%.2f time=%.2f zoom=%.2f ui=%d heat=%d\n",
+        std::string values;
+        for (const scene::Param& p : scene_.params) values += (values.empty() ? "" : ",") + formatNumber(p.value, p.decimals);
+        std::printf("scene=%s tool=%d bodies=%d joints=%d paused=%d settings=%d gravity=%.2f time=%.2f zoom=%.2f ui=%d "
+                    "heat=%d tab=%d vectors=%d slow=%d selected=%d params=%s\n",
                     scene::sceneList()[sceneIndex_].name, static_cast<int>(tool_), s.bodies, s.joints, paused_ ? 1 : 0,
-                    showSettings_ ? 1 : 0, static_cast<double>(gravityScale_), static_cast<double>(timeScale_),
-                    static_cast<double>(userZoom_), showUi_ ? 1 : 0, heatView_ ? 1 : 0);
+                    showSettings_ ? 1 : 0, static_cast<double>(gravity_), static_cast<double>(timeScale_),
+                    static_cast<double>(userZoom_), showUi_ ? 1 : 0, heatView_ ? 1 : 0, lessonTab_, vectorsOn_ ? 1 : 0,
+                    slowMotion_ ? 1 : 0, selectedBody() != nullptr ? 1 : 0, values.c_str());
     }
     return 0;
 #endif
@@ -415,12 +522,18 @@ void App::frame() {
     view_.height = static_cast<float>(pipeline_.height());
 
     readPointer();
+    // A setting that restarts the experiment does so once the slider is let go.
+    if (paramsDirty_ && !pointer_.leftDown) {
+        paramsDirty_ = false;
+        reset();
+    }
     handleKeys();
     handlePointer();
 
     const double physicsStart = secondsNow();
     if (!paused_ || stepOnce_) {
-        accumulator_ += stepOnce_ && paused_ ? kStep : dt * timeScale_;
+        const float speed = timeScale_ * (slowMotion_ ? kSlowMotion : 1.0f);
+        accumulator_ += stepOnce_ && paused_ ? kStep : dt * speed;
         int steps = 0;
         while (accumulator_ >= kStep && steps < kMaxStepsPerFrame) {
             stepPhysics(kStep);
@@ -430,7 +543,7 @@ void App::frame() {
         // If the machine can't keep up, slow down rather than spiral.
         if (steps == kMaxStepsPerFrame) accumulator_ = 0.0f;
         renderAlpha_ = accumulator_ / kStep;
-        effects_.update(dt * timeScale_, scene_.world.gravity);
+        effects_.update(dt * speed, scene_.world.gravity);
     }
     stepOnce_ = false;
     benchPhysics_ += frameIndex_ > 30 ? secondsNow() - physicsStart : 0.0;
@@ -464,32 +577,22 @@ void App::handleKeys() {
     if (keyHit(KEY_T)) trailsOn_ = !trailsOn_;
     if (keyHit(KEY_B)) bloomOn_ = !bloomOn_;
     if (keyHit(KEY_C)) debugOn_ = !debugOn_;
-    if (keyHit(KEY_V)) heatView_ = !heatView_;
+    if (keyHit(KEY_K)) heatView_ = !heatView_;
+    if (keyHit(KEY_V)) vectorsOn_ = !vectorsOn_;
+    if (keyHit(KEY_S)) slowMotion_ = !slowMotion_;
 #if !defined(__EMSCRIPTEN__)
     if (keyHit(KEY_F)) ToggleBorderlessWindowed();  // the page handles this key on the web
 #endif
-    if (keyHit(KEY_Q)) tool_ = Tool::Grab;
+    if (keyHit(KEY_Q)) tool_ = Tool::Inspect;
+    if (keyHit(KEY_W)) tool_ = Tool::Grab;
+    if (keyHit(KEY_E)) tool_ = Tool::Throw;
 
     const int count = static_cast<int>(scene::sceneList().size());
-    for (int i = 0; i < count; ++i) {
-        if (keyHit(kSceneKeyCodes[i]) && i != sceneIndex_) {
-            pendingScene_ = i;
-            fadingOut_ = true;
-        }
+    for (int i = 0; i < std::min(count, 12); ++i) {
+        if (keyHit(kSceneKeyCodes[i])) changeScene(i);
     }
-    if (keyHit(KEY_RIGHT_BRACKET)) {
-        pendingScene_ = (sceneIndex_ + 1) % count;
-        fadingOut_ = true;
-    }
-    if (keyHit(KEY_LEFT_BRACKET)) {
-        pendingScene_ = (sceneIndex_ + count - 1) % count;
-        fadingOut_ = true;
-    }
-
-    const bool left = !capture_ && (IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A));
-    const bool right = !capture_ && (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D));
-    input_.drive = (right ? 1.0f : 0.0f) - (left ? 1.0f : 0.0f);
-    if (left || right) input_.driving = true;
+    if (keyHit(KEY_RIGHT_BRACKET)) changeScene((sceneIndex_ + 1) % count);
+    if (keyHit(KEY_LEFT_BRACKET)) changeScene((sceneIndex_ + count - 1) % count);
 }
 
 void App::handlePointer() {
@@ -500,7 +603,9 @@ void App::handlePointer() {
     const bool overUi = showUi_ && ui_.wantsMouse(pointer_.position);
 
     const float wheel = pointer_.wheel;
-    if (wheel != 0.0f && !overUi) {
+    if (wheel != 0.0f && showUi_ && lessonScrollBox_.contains(pointer_.position)) {
+        lessonScroll_ -= wheel * 32.0f;  // clamped when the panel is drawn
+    } else if (wheel != 0.0f && !overUi) {
         const Vec2 before = view_.toWorld(pixels);
         userZoom_ = std::clamp(userZoom_ * std::exp(wheel * 0.09f), 0.25f, 6.0f);
         view_.pixelsPerMetre = fitScale() * userZoom_;
@@ -510,10 +615,21 @@ void App::handlePointer() {
     }
 
     if (pointer_.leftPressed && !overUi) {
+        const int id = world.bodyAt(mouseWorld_);
+        const bool onBody = id >= 0 && world.bodies()[id].isDynamic();
         switch (tool_) {
-            case Tool::Grab: {
-                const int id = world.bodyAt(mouseWorld_);
-                if (id >= 0 && world.bodies()[id].isDynamic()) {
+            case Tool::Inspect:
+                if (onBody) {
+                    selected_ = id;
+                    selectedSerial_ = world.bodies()[id].serial;
+                } else {
+                    selected_ = -1;
+                    drag_ = Drag::Pan;
+                    panStartWorld_ = mouseWorld_;
+                }
+                break;
+            case Tool::Grab:
+                if (onBody) {
                     grabbedBody_ = id;
                     mouseJoint_ = world.createMouse(id, mouseWorld_, 1400.0f * world.bodies()[id].mass, 7.0f, 1.0f);
                     drag_ = Drag::Body;
@@ -522,20 +638,9 @@ void App::handlePointer() {
                     panStartWorld_ = mouseWorld_;
                 }
                 break;
-            }
-            case Tool::Ball:
-            case Tool::Box:
-            case Tool::Gem:
+            case Tool::Throw:
                 drag_ = Drag::Aim;
                 aimStart_ = mouseWorld_;
-                break;
-            case Tool::Bomb:
-                world.explode(mouseWorld_, 11.0f, 34.0f);
-                effects_.shockwave(mouseWorld_, 11.0f, gfx::linearHex(0xFFD9A8), 0.55f);
-                if (sparksOn_) effects_.sparks(mouseWorld_, {0.0f, 1.0f}, 34.0f, gfx::linearHex(0xFFC27A), 90);
-                break;
-            case Tool::Pull:
-                drag_ = Drag::Pull;
                 break;
         }
     }
@@ -548,10 +653,7 @@ void App::handlePointer() {
                 mouseJoint_ = -1;
                 grabbedBody_ = -1;
             }
-            const Body& b = world.bodies()[id];
-            const Col colour = gfx::linearHex(b.color);
-            effects_.shockwave(b.pos, b.shape.boundRadius * 2.4f, colour, 0.35f);
-            if (sparksOn_) effects_.sparks(b.pos, {0.0f, 1.0f}, 14.0f, colour, 26);
+            if (id == selected_) selected_ = -1;
             world.destroyBody(id);
         } else {
             drag_ = Drag::Pan;
@@ -576,59 +678,31 @@ void App::handlePointer() {
             mouseJoint_ = -1;
             grabbedBody_ = -1;
         } else if (drag_ == Drag::Aim) {
-            // A click drops the body; a drag throws it towards the cursor.
-            spawnFromTool(aimStart_, (mouseWorld_ - aimStart_) * 2.6f);
+            // A click drops a ball; a drag throws it towards the cursor.
+            throwBody(aimStart_, (mouseWorld_ - aimStart_) * 2.6f);
         }
         drag_ = Drag::None;
     }
 }
 
-void App::spawnFromTool(Vec2 at, Vec2 velocity) {
-    const float size = 0.42f + randomUnit(spawnSeed_) * 0.42f;
+void App::throwBody(Vec2 at, Vec2 velocity) {
     BodyDef d;
+    d.shape = phys::makeCircle(0.4f + randomUnit(spawnSeed_) * 0.3f);
     d.pos = at;
     d.vel = velocity;
-    d.angle = randomUnit(spawnSeed_) * 6.28f;
     d.density = 1.4f;
     d.restitution = 0.25f;
     d.color = scene::sampleRamp(scene_.style.ramp, randomUnit(spawnSeed_));
     d.trail = phys::length(velocity) > 8.0f;
-
-    switch (tool_) {
-        case Tool::Box: d.shape = phys::makeBox(size, size * 0.8f); break;
-        case Tool::Gem: d.shape = phys::makeRegularPolygon(5 + static_cast<int>(randomUnit(spawnSeed_) * 3.5f), size * 1.2f); break;
-        default: d.shape = phys::makeCircle(size); break;
-    }
     const int id = scene_.world.createBody(d);
-    effects_.shockwave(at, size * 3.0f, gfx::linearHex(d.color), 0.3f);
-    scene_.world.bodies()[id].flash = 0.7f;
+    scene_.world.bodies()[id].flash = 0.5f;
 }
 
 void App::stepPhysics(float dt) {
     phys::World& world = scene_.world;
-
-    if (scene_.update) scene_.update(scene_, input_, dt);
-
     if (mouseJoint_ >= 0) world.joints()[mouseJoint_].target = mouseWorld_;
 
-    if (drag_ == Drag::Pull) {
-        constexpr float kRadius = 16.0f;
-        constexpr float kStrength = 90.0f;
-        for (int i = 0; i < static_cast<int>(world.bodies().size()); ++i) {
-            Body& b = world.bodies()[i];
-            if (!b.alive || !b.isDynamic()) continue;
-            const Vec2 d = mouseWorld_ - b.pos;
-            const float dist = phys::length(d);
-            if (dist > kRadius || dist < 0.05f) continue;
-            const float falloff = 1.0f - dist / kRadius;
-            world.wake(i);
-            b.vel += d * (kStrength * falloff * dt / dist);
-            b.vel *= 1.0f - 1.6f * falloff * dt;
-        }
-    }
-
-    world.step(dt);
-    scene_.time += dt;
+    scene_.step(dt);
 
     pollImpacts();
     trails_.sample(world);
@@ -639,6 +713,7 @@ void App::stepPhysics(float dt) {
         if (!b.alive || !b.isDynamic()) continue;
         if (b.pos.y < scene_.killY || std::abs(b.pos.y) > 2000.0f) {
             if (i == grabbedBody_) continue;
+            if (i == selected_) selected_ = -1;
             world.destroyBody(i);
         }
     }
@@ -659,20 +734,13 @@ void App::pollImpacts() {
         const int count = std::clamp(static_cast<int>(hit.speed * 0.35f), 2, 12);
         effects_.sparks(hit.point, hit.normal, hit.speed, gfx::linearHex(lit.color), count);
         budget -= count;
-
-        const float reduced = std::min(a.mass > 0.0f ? a.mass : 1e9f, b.mass > 0.0f ? b.mass : 1e9f);
-        // Rings are for the big moments, and a rain of debris shouldn't trigger a wall of them.
-        if (hit.speed > 20.0f && reduced > 2.5f && scene_.time - lastRingTime_ > 0.25f) {
-            lastRingTime_ = scene_.time;
-            effects_.shockwave(hit.point, 1.5f + hit.speed * 0.09f, gfx::linearHex(lit.color), 0.4f);
-        }
     }
 }
 
 void App::updateCamera(float dt) {
     const float inset = showUi_ ? 1.0f : 0.0f;
     insetAnim_ += (inset - insetAnim_) * (1.0f - std::exp(-dt * 10.0f));
-    view_.originX = (view_.width + stageInset()) * 0.5f;
+    view_.originX = (view_.width + stageLeft() - stageRight()) * 0.5f;
 
     Vec2 target = scene_.camera;
     if (scene_.follow >= 0 && scene_.world.bodies()[scene_.follow].alive) {
@@ -704,7 +772,7 @@ void App::drawOverlay() {
     }
 
     if (drag_ == Drag::Aim) {
-        // Dots along the path the thrown body will take.
+        // Dots along the path the thrown body will take: a parabola, or a straight line without gravity.
         const Vec2 velocity = (mouseWorld_ - aimStart_) * 2.6f;
         Vec2 p = aimStart_;
         Vec2 v = velocity;
@@ -717,24 +785,28 @@ void App::drawOverlay() {
         }
         canvas_.ring(view_.toPixels(aimStart_), 7.0f * dpi, 0.8f * dpi, gfx::withAlpha(accent, 0.8f), dpi);
     }
-
-    if (drag_ == Drag::Pull) {
-        pullPulse_ = std::fmod(pullPulse_ + frameDt_ * 1.5f, 1.0f);
-        const Vec2 c = view_.toPixels(mouseWorld_);
-        for (int i = 0; i < 3; ++i) {
-            const float t = std::fmod(pullPulse_ + static_cast<float>(i) / 3.0f, 1.0f);
-            const float radius = (1.0f - t) * 12.0f * view_.pixelsPerMetre;
-            canvas_.ring(c, radius, 0.9f * dpi, gfx::withAlpha(accent, 0.34f * t), dpi);
-        }
-    }
 }
 
 void App::render() {
     rlDisableBackfaceCulling();
+    const phys::World& world = scene_.world;
 
     gfx::Painter::Options paintOptions;
     paintOptions.heatView = heatView_;
-    painter_.prepare(scene_.world, scene_.style, view_, renderAlpha_, sceneDpi_, paintOptions);
+    painter_.prepare(world, scene_.style, view_, renderAlpha_, sceneDpi_, paintOptions);
+
+    // The selected body gets a ring and its velocity, on top of whatever the lesson draws.
+    std::vector<scene::Marker> selection;
+    std::vector<scene::Arrow> selectionArrows;
+    if (const Body* b = selectedBody()) {
+        scene::Marker ring;
+        ring.body = selected_;
+        ring.radius = b->shape.boundRadius + 0.18f;
+        ring.ring = true;
+        ring.colour = 0xF3F5F9;
+        selection.push_back(ring);
+        selectionArrows.push_back({selected_, {}, b->vel * 0.25f, scene::ink::velocity, "v"});
+    }
 
     pipeline_.beginScene();
     {
@@ -748,7 +820,8 @@ void App::render() {
 
         canvas_.begin();
         painter_.drawHorizon(canvas_, scene_.terrain, scene_.style);
-        painter_.drawJointLines(canvas_, scene_.world, scene_.style);
+        painter_.drawGuides(canvas_, scene_.overlays, true);
+        painter_.drawJointLines(canvas_, world, scene_.style);
         painter_.drawTerrain(canvas_, scene_.terrain, scene_.style);
         painter_.drawSolids(canvas_);
         painter_.drawShadows(canvas_);
@@ -757,13 +830,13 @@ void App::render() {
         if (trailsOn_) {
             pipeline_.beginEmissive(1.8f);
             canvas_.begin();
-            trails_.draw(canvas_, scene_.world, view_, renderAlpha_, sceneDpi_);
+            trails_.draw(canvas_, world, view_, renderAlpha_, sceneDpi_);
             canvas_.end();
             pipeline_.endEmissive();
         }
 
         canvas_.begin();
-        painter_.drawBlobs(canvas_, scene_.world, scene_.blobs);
+        painter_.drawBlobs(canvas_, world, scene_.blobs);
         painter_.drawBodies(canvas_);
         canvas_.end();
 
@@ -772,11 +845,16 @@ void App::render() {
         painter_.drawEmissive(canvas_);
         painter_.drawBlobEmissive(canvas_);
         painter_.drawTerrainRim(canvas_, scene_.terrain, scene_.style);
-        painter_.drawPins(canvas_, scene_.world, scene_.style);
+        painter_.drawPins(canvas_, world, scene_.style);
         painter_.drawGuides(canvas_, scene_.guides);
+        painter_.drawGuides(canvas_, scene_.overlays);
+        painter_.drawMarkers(canvas_, world, scene_.markers);
+        painter_.drawMarkers(canvas_, world, selection);
+        if (vectorsOn_) painter_.drawArrows(canvas_, world, scene_.arrows);
+        painter_.drawArrows(canvas_, world, selectionArrows);
         effects_.draw(canvas_, view_, sceneDpi_);
         drawOverlay();
-        if (debugOn_) painter_.drawDebug(canvas_, scene_.world);
+        if (debugOn_) painter_.drawDebug(canvas_, world);
         canvas_.end();
         pipeline_.endEmissive();
     }
@@ -795,7 +873,7 @@ void App::render() {
     const Vec2 screen = screenPoints();
     pipeline_.present(composite, screen.x, screen.y);
 
-    if (showUi_) drawHud();
+    drawHud();
 
     const bool lastFrame = capture_ && frameIndex_ == options_.frames - 1;
     if (lastFrame && !options_.shotPath.empty()) {
@@ -807,79 +885,544 @@ void App::render() {
     EndDrawing();
 }
 
+// ------------------------------------------------------------------- interface
+
+Vec2 App::toScreen(Vec2 world) const { return view_.toPixels(world) * (1.0f / sceneDpi_); }
+
+float App::sectionHeading(const char* label, float x, float y) {
+    ui_.text(Face::Small, label, x, y, kInkFaint);
+    return y + 21.0f;
+}
+
 void App::drawHud() {
     const Col accent = gfx::uiHex(scene::sampleRamp(scene_.style.ramp, 0.3f));
     const Vec2 screen = screenPoints();
     ui_.beginFrame(pipeline_, canvas_, frameDt_, dpi_, screen, accent, pointer_);
 
-    const float screenW = screen.x;
-    const float screenH = screen.y;
-    const Col ink = gfx::uiHex(0xF3F5F9);
-    const Col inkDim = gfx::uiHex(0xF3F5F9, 0.6f);
-    const Col inkFaint = gfx::uiHex(0xF3F5F9, 0.4f);
+    // Labels belong to the scene, so they go under every panel. They show even with the UI hidden.
+    drawSceneLabels();
 
-    const auto& scenes = scene::sceneList();
-    const scene::SceneInfo& info = scenes[sceneIndex_];
+    if (showUi_) {
+        drawCurriculum(screen.y);
 
-    // Scene list.
-    const float listH = 14.0f + kRowHeight * static_cast<float>(scenes.size());
-    const float listY = std::max((screenH - listH - 60.0f) * 0.5f, 16.0f);
-    ui_.panel({14.0f, listY, kPanelWidth - 24.0f, listH}, 14.0f);
-    for (int i = 0; i < static_cast<int>(scenes.size()); ++i) {
-        const Box2 row{21.0f, listY + 7.0f + kRowHeight * static_cast<float>(i), kPanelWidth - 38.0f, kRowHeight};
-        if (ui_.listItem(&scenes[i], row, scenes[i].name, kSceneKeys[i], i == sceneIndex_) && i != sceneIndex_) {
-            pendingScene_ = i;
-            fadingOut_ = true;
+        const float columnX = screen.x - kLessonWidth + 12.0f;
+        const float columnW = kLessonWidth - 26.0f;
+        const float instruments = instrumentsHeight();
+        const float lessonH = screen.y - 2.0f * kMargin - (instruments > 0.0f ? instruments + 10.0f : 0.0f);
+        drawLesson(columnX, kMargin, columnW, lessonH);
+        if (instruments > 0.0f) drawInstruments(columnX, screen.y - kMargin - instruments, columnW, instruments);
+
+        // The clock, top right of the stage.
+        const float stageRightEdge = screen.x - kLessonWidth - 6.0f;
+        char clock[48];
+        std::snprintf(clock, sizeof clock, "t = %.2f s", static_cast<double>(scene_.time));
+        ui_.text(Face::Mono, clock, stageRightEdge - ui_.textWidth(Face::Mono, clock), 20.0f, kInkDim);
+        float flagY = 38.0f;
+        if (paused_) {
+            ui_.text(Face::Mono, "PAUSED", stageRightEdge - ui_.textWidth(Face::Mono, "PAUSED"), flagY, accent);
+            flagY += 17.0f;
+        }
+        if (slowMotion_) {
+            const char* label = "SLOW MOTION ¼×";
+            ui_.text(Face::Caption, label, stageRightEdge - ui_.textWidth(Face::Caption, label), flagY, accent);
+        }
+
+        drawInspector(kListWidth + 4.0f, kMargin);
+        drawDock(screen.x, screen.y);
+    }
+    ui_.endFrame();
+}
+
+void App::drawSceneLabels() {
+    const phys::World& world = scene_.world;
+    if (vectorsOn_) {
+        for (const scene::Arrow& a : scene_.arrows) {
+            if (a.label.empty()) continue;
+            const Vec2 base = painter_.anchor(world, a.body, a.from);
+            const Vec2 from = toScreen(base);
+            const Vec2 to = toScreen(base + a.vec);
+            if (phys::length(to - from) < 6.0f) continue;
+            const Vec2 at = to + phys::normalized(to - from) * 10.0f;
+            const float w = ui_.textWidth(Face::Caption, a.label.c_str());
+            ui_.textOverScene(Face::Caption, a.label.c_str(), at.x - w * 0.5f, at.y - 7.5f, gfx::uiHex(a.colour));
+        }
+    }
+    for (const scene::Marker& m : scene_.markers) {
+        if (m.label.empty()) continue;
+        const Vec2 p = toScreen(painter_.anchor(world, m.body, m.at));
+        const float w = ui_.textWidth(Face::Caption, m.label.c_str());
+        const Col colour = gfx::uiHex(m.colour);
+        if (m.radius <= 0.0f) {
+            if (isDark(m.colour)) {
+                ui_.text(Face::Caption, m.label.c_str(), p.x - w * 0.5f, p.y - 7.5f, colour);
+            } else {
+                ui_.textOverScene(Face::Caption, m.label.c_str(), p.x - w * 0.5f, p.y - 7.5f, colour);
+            }
+        } else {
+            const float r = std::max(m.radius * view_.pixelsPerMetre / sceneDpi_, 2.5f);
+            ui_.textOverScene(Face::Caption, m.label.c_str(), p.x + r + 6.0f, p.y - 7.5f, colour);
+        }
+    }
+}
+
+void App::drawCurriculum(float screenH) {
+    const auto& lessons = scene::sceneList();
+    const int count = static_cast<int>(lessons.size());
+
+    float height = 14.0f;
+    for (int i = 0; i < count; ++i) {
+        if (i == 0 || std::string_view(lessons[i].topic) != lessons[i - 1].topic) height += i == 0 ? 20.0f : 27.0f;
+        height += kRowHeight;
+    }
+    const float top = std::max((screenH - height - 70.0f) * 0.5f, kMargin);
+    ui_.panel({kMargin, top, kListWidth - 24.0f, height}, 14.0f);
+
+    float y = top + 10.0f;
+    for (int i = 0; i < count; ++i) {
+        if (i == 0 || std::string_view(lessons[i].topic) != lessons[i - 1].topic) {
+            if (i > 0) y += 7.0f;
+            std::string topic = lessons[i].topic;
+            for (char& c : topic) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            ui_.text(Face::Small, topic.c_str(), kMargin + 17.0f, y + 4.0f, kInkFaint);
+            y += 20.0f;
+        }
+        const Box2 row{kMargin + 7.0f, y, kListWidth - 38.0f, kRowHeight};
+        if (ui_.listItem(&lessons[i], row, lessons[i].name, i < 12 ? kSceneKeys[i] : "", i == sceneIndex_)) changeScene(i);
+        y += kRowHeight;
+    }
+}
+
+void App::drawLesson(float x, float y, float w, float h) {
+    const auto& lessons = scene::sceneList();
+    const scene::SceneInfo& info = lessons[sceneIndex_];
+    const Col accent = gfx::mix(gfx::uiHex(scene::sampleRamp(scene_.style.ramp, 0.3f)), kInk, 0.25f);
+    ui_.panel({x, y, w, h}, 16.0f);
+
+    const float left = x + 20.0f;
+    const float width = w - 40.0f;
+    float cursor = y + 18.0f;
+
+    std::string topic = info.topic;
+    for (char& c : topic) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    char header[96];
+    std::snprintf(header, sizeof header, "%s  ·  %d OF %d", topic.c_str(), sceneIndex_ + 1, static_cast<int>(lessons.size()));
+    ui_.text(Face::Small, header, left, cursor, accent);
+    cursor += 16.0f;
+    ui_.text(Face::Heading, info.name, left, cursor, kInk);
+    cursor += 34.0f;
+
+    const float tabW = width * 0.5f;
+    if (ui_.tab(&lessonTab_, {left, cursor, tabW - 2.0f, 28.0f}, "Learn", lessonTab_ == 0) && lessonTab_ != 0) {
+        lessonTab_ = 0;
+        lessonScroll_ = 0.0f;
+    }
+    if (ui_.tab(&lessonContent_, {left + tabW + 2.0f, cursor, tabW - 2.0f, 28.0f}, "Experiment", lessonTab_ == 1) &&
+        lessonTab_ != 1) {
+        lessonTab_ = 1;
+        lessonScroll_ = 0.0f;
+    }
+    cursor += 28.0f + 12.0f;
+
+    const Box2 area{x + 2.0f, cursor, w - 4.0f, std::max(y + h - cursor - 8.0f, 20.0f)};
+    lessonScrollBox_ = area;
+    const float maxScroll = std::max(0.0f, lessonContent_ - area.h + 10.0f);
+    lessonScroll_ = std::clamp(lessonScroll_, 0.0f, maxScroll);
+
+    // The principle leads both tabs, and scrolls with them so short windows keep room to read.
+    ui_.beginClip(area);
+    const float start = cursor + 8.0f - lessonScroll_;
+    const float body = start + ui_.paragraph(Face::Body, info.principle, left, start, width, kInk, 1.5f) + 20.0f;
+    const float end = lessonTab_ == 0 ? drawLearn(left, body, width) : drawExperiment(left, body, width);
+    ui_.endClip();
+    lessonContent_ = end - start + 8.0f;
+
+    // Soft edges where the text runs on beyond the visible part.
+    const auto fade = [&](float edgeY, float towardY) {
+        const Col solid = gfx::uiHex(0x101219, 0.92f);
+        const Col clear = gfx::uiHex(0x101219, 0.0f);
+        canvas_.quad({area.x, edgeY}, solid, {area.x + area.w, edgeY}, solid, {area.x + area.w, towardY}, clear, {area.x, towardY}, clear);
+    };
+    canvas_.begin();
+    if (lessonScroll_ < maxScroll - 1.0f) fade(area.y + area.h, area.y + area.h - 26.0f);
+    if (lessonScroll_ > 1.0f) fade(area.y, area.y + 18.0f);
+    canvas_.end();
+
+    if (maxScroll > 0.0f) {
+        const float track = area.h - 8.0f;
+        const float thumb = std::max(24.0f, track * area.h / lessonContent_);
+        const float thumbY = area.y + 4.0f + (track - thumb) * (lessonScroll_ / maxScroll);
+        canvas_.begin();
+        canvas_.roundedRect(x + w - 8.0f, thumbY, 3.0f, thumb, 1.5f, gfx::uiHex(0xFFFFFF, 0.22f));
+        canvas_.end();
+    }
+}
+
+float App::drawLearn(float x, float y, float w) {
+    const scene::SceneInfo& info = scene::sceneList()[sceneIndex_];
+    const Col accent = gfx::uiHex(scene::sampleRamp(scene_.style.ramp, 0.3f));
+
+    // The maths, set apart in a box of its own.
+    const std::vector<std::string> lines = splitLines(info.equation);
+    constexpr float kLine = 23.0f;
+    const float boxH = 14.0f + static_cast<float>(lines.size()) * kLine + 4.0f;
+    canvas_.begin();
+    canvas_.roundedRect(x - 6.0f, y, w + 12.0f, boxH, 10.0f, gfx::uiHex(0xFFFFFF, 0.05f));
+    canvas_.roundedRect(x - 6.0f, y + 10.0f, 2.5f, boxH - 20.0f, 1.25f, gfx::withAlpha(accent, 0.9f));
+    canvas_.end();
+    float ly = y + 12.0f;
+    for (const std::string& line : lines) {
+        ui_.text(Face::Equation, line.c_str(), x + 8.0f, ly, kInk);
+        ly += kLine;
+    }
+    y += boxH + 22.0f;
+
+    y = sectionHeading("HOW IT WORKS", x, y);
+    y += ui_.paragraph(Face::Body, info.how, x, y, w, kInkSoft, 1.55f) + 24.0f;
+
+    y = sectionHeading("WHERE IT'S USED", x, y);
+    for (const std::string& use : splitLines(info.uses)) {
+        canvas_.begin();
+        canvas_.disc({x + 2.5f, y + 8.5f}, 2.2f, accent);
+        canvas_.end();
+        y += ui_.paragraph(Face::Body, use.c_str(), x + 14.0f, y, w - 14.0f, kInkSoft, 1.5f) + 9.0f;
+    }
+    return y + 4.0f;
+}
+
+float App::drawExperiment(float x, float y, float w) {
+    const scene::SceneInfo& info = scene::sceneList()[sceneIndex_];
+    const Col accent = gfx::uiHex(scene::sampleRamp(scene_.style.ramp, 0.3f));
+    auto& params = scene_.params;
+
+    if (!params.empty()) {
+        y = sectionHeading("SET UP", x, y);
+        bool restarts = false;
+        bool changed = false;
+        for (size_t i = 0; i < params.size(); ++i) {
+            scene::Param& p = params[i];
+            const std::string text = p.format ? p.format(p.value) : withUnit(formatNumber(p.value, p.decimals), p.unit);
+            float v = p.value;
+            if (ui_.slider(&p, {x, y, w, 40.0f}, p.label.c_str(), text.c_str(), v, p.lo, p.hi)) {
+                if (p.step > 0.0f) v = std::clamp(std::round(v / p.step) * p.step, p.lo, p.hi);
+                if (v != p.value) {
+                    p.value = v;
+                    lessonValues_[sceneIndex_][i] = v;
+                    if (!p.live) paramsDirty_ = true;
+                }
+            }
+            restarts = restarts || !p.live;
+            changed = changed || std::abs(p.value - p.initial) > 1e-5f;
+            y += 46.0f;
+        }
+        if (restarts) {
+            ui_.text(Face::Caption, "Changing a setting restarts the experiment.", x, y - 4.0f, kInkFaint);
+            y += 18.0f;
+        }
+        if (changed) {
+            if (ui_.link(&lessonValues_, x, y, "Restore defaults")) {
+                lessonValues_[sceneIndex_].clear();
+                reset();
+            }
+            y += 20.0f;
+        }
+        y += 14.0f;
+    }
+
+    y = sectionHeading("TRY THIS", x, y);
+    int number = 1;
+    for (const std::string& idea : splitLines(info.tryThis)) {
+        char label[8];
+        std::snprintf(label, sizeof label, "%d", number++);
+        ui_.text(Face::Strong, label, x, y, accent);
+        y += ui_.paragraph(Face::Body, idea.c_str(), x + 16.0f, y, w - 16.0f, kInkSoft, 1.5f) + 10.0f;
+    }
+
+    // A key to the arrows currently on screen.
+    std::vector<const scene::Arrow*> kinds;
+    for (const scene::Arrow& a : scene_.arrows) {
+        if (a.label.empty() || arrowMeaning(a.label)[0] == '\0') continue;
+        const bool seen = std::any_of(kinds.begin(), kinds.end(), [&](const scene::Arrow* k) { return k->label == a.label; });
+        if (!seen) kinds.push_back(&a);
+    }
+    if (!kinds.empty() && vectorsOn_) {
+        y += 12.0f;
+        y = sectionHeading("ARROWS", x, y);
+        for (const scene::Arrow* a : kinds) {
+            const Col colour = gfx::uiHex(a->colour);
+            canvas_.begin();
+            canvas_.line({x, y + 8.0f}, {x + 15.0f, y + 8.0f}, 1.5f, colour, 0.8f);
+            canvas_.triangleFilled({x + 21.0f, y + 8.0f}, {x + 14.0f, y + 4.0f}, {x + 14.0f, y + 12.0f}, colour);
+            canvas_.end();
+            ui_.text(Face::Strong, a->label.c_str(), x + 30.0f, y, colour);
+            ui_.text(Face::Body, arrowMeaning(a->label), x + 62.0f, y, kInkSoft);
+            y += 21.0f;
         }
     }
 
-    // Title and caption.
-    const float titleX = kPanelWidth + 14.0f;
-    ui_.text(Face::Title, info.name, titleX, 18.0f, ink);
-    ui_.text(Face::Body, info.blurb, titleX, 53.0f, inkDim);
+    y += 14.0f;
+    y += ui_.paragraph(Face::Caption,
+                       "Use the Inspect tool (Q) to read any body's mass, speed, momentum and energy. "
+                       "S slows time down, Space pauses, and . steps one frame at a time.",
+                       x, y, w, kInkFaint, 1.5f);
+    return y + 4.0f;
+}
 
-    // A suggestion of what to try, under the caption while the scene is new.
-    const float hintAlpha = std::clamp(9.0f - scene_.time, 0.0f, 1.0f);
-    if (hintAlpha > 0.0f) {
-        ui_.text(Face::Body, info.hint, titleX, 72.0f, gfx::uiHex(0xF3F5F9, 0.4f * hintAlpha));
+// The plot gives up height first on short screens, leaving room for the lesson text.
+float App::plotHeight() const { return std::clamp((screenPoints().y - 600.0f) * 0.25f + 64.0f, 64.0f, 96.0f); }
+
+float App::instrumentsHeight() const {
+    const int rows = static_cast<int>(scene_.readouts.size());
+    const bool plot = scene_.plot.active();
+    if (rows == 0 && !plot) return 0.0f;
+    float h = 16.0f + 21.0f + static_cast<float>(rows) * 20.0f + 10.0f;
+    if (plot) h += 8.0f + 22.0f + plotHeight();
+    return h;
+}
+
+void App::drawInstruments(float x, float y, float w, float h) {
+    ui_.panel({x, y, w, h}, 16.0f);
+    const float left = x + 18.0f;
+    const float right = x + w - 18.0f;
+    const bool anyTheory = std::any_of(scene_.readouts.begin(), scene_.readouts.end(), [](const scene::Readout& r) {
+        return std::isfinite(r.expected) || !r.expectedText.empty();
+    });
+    const float measuredRight = anyTheory ? right - 66.0f : right;
+
+    float cursor = y + 16.0f;
+    ui_.text(Face::Small, "MEASUREMENTS", left, cursor, kInkFaint);
+    if (anyTheory) {
+        ui_.text(Face::Small, "MEASURED", measuredRight - ui_.textWidth(Face::Small, "MEASURED"), cursor, kInkFaint);
+        ui_.text(Face::Small, "THEORY", right - ui_.textWidth(Face::Small, "THEORY"), cursor, kInkFaint);
+    }
+    cursor += 21.0f;
+
+    for (const scene::Readout& r : scene_.readouts) {
+        std::string measured = r.text;
+        if (measured.empty()) measured = std::isfinite(r.value) ? withUnit(formatNumber(r.value, r.decimals), r.unit) : "–";
+        std::string theory = r.expectedText;
+        if (theory.empty() && std::isfinite(r.expected)) theory = formatNumber(r.expected, r.decimals);
+
+        const float labelX = left + (r.colour != 0 ? 13.0f : 0.0f);
+        if (r.colour != 0) {
+            canvas_.begin();
+            canvas_.disc({left + 3.5f, cursor + 8.5f}, 3.5f, gfx::uiHex(r.colour));
+            canvas_.end();
+        }
+        const float measuredW = ui_.textWidth(Face::Mono, measured.c_str());
+        // Long labels lose their end rather than run into the numbers.
+        std::string label = r.label;
+        const float room = measuredRight - measuredW - 10.0f - labelX;
+        if (ui_.textWidth(Face::Body, label.c_str()) > room) {
+            while (!label.empty() && ui_.textWidth(Face::Body, (label + "…").c_str()) > room) {
+                do label.pop_back();
+                while (!label.empty() && (static_cast<unsigned char>(label.back()) & 0xC0) == 0x80);
+                if (!label.empty()) label.pop_back();
+            }
+            label += "…";
+        }
+        ui_.text(Face::Body, label.c_str(), labelX, cursor, kInkSoft);
+        ui_.text(Face::Mono, measured.c_str(), measuredRight - measuredW, cursor + 1.5f, kInk);
+        if (!theory.empty()) {
+            ui_.text(Face::Mono, theory.c_str(), right - ui_.textWidth(Face::Mono, theory.c_str()), cursor + 1.5f, kInkDim);
+        }
+        cursor += 20.0f;
     }
 
-    // Live numbers, top right.
-    char stats[160];
-    const phys::WorldStats& s = scene_.world.stats();
-    std::snprintf(stats, sizeof stats, "%3.0f fps   %d bodies   %d contacts   %.1f ms", statFps_, s.bodies, s.contacts, statPhysicsMs_);
-    ui_.text(Face::Mono, stats, screenW - ui_.textWidth(Face::Mono, stats) - 20.0f, 22.0f, inkFaint);
+    if (scene_.plot.active()) drawPlot({left, cursor + 8.0f, right - left, 22.0f + plotHeight()});
+}
 
-    // The dock.
-    constexpr float kButton = 42.0f;
+void App::drawPlot(Box2 box) {
+    const scene::Plot& plot = scene_.plot;
+    ui_.text(Face::Caption, plot.title.c_str(), box.x, box.y, kInkDim);
+    if (plot.series.size() > 1) {
+        float lx = box.x + box.w;
+        for (auto it = plot.series.rbegin(); it != plot.series.rend(); ++it) {
+            const float tw = ui_.textWidth(Face::Caption, it->name.c_str());
+            lx -= tw;
+            ui_.text(Face::Caption, it->name.c_str(), lx, box.y, kInkDim);
+            canvas_.begin();
+            canvas_.disc({lx - 7.0f, box.y + 7.5f}, 3.0f, gfx::uiHex(it->colour));
+            canvas_.end();
+            lx -= 18.0f;
+        }
+    }
+    const Box2 area{box.x, box.y + 22.0f, box.w, box.h - 22.0f};
+    canvas_.begin();
+    canvas_.roundedRect(area.x, area.y, area.w, area.h, 8.0f, gfx::uiHex(0xFFFFFF, 0.035f));
+    canvas_.end();
+    if (plot.times.empty()) return;
+
+    const auto transform = [&](float v) { return plot.log ? std::log10(std::max(v, 1e-12f)) : v; };
+    const float end = plot.times.back();
+    const float start = end - plot.span;
+
+    // Fixed range, or one that fits what is on screen, eased so it doesn't twitch.
+    float lo = plot.lo, hi = plot.hi;
+    if (!(lo < hi)) {
+        lo = 1e30f;
+        hi = -1e30f;
+        for (const auto& s : plot.series) {
+            for (size_t i = 0; i < s.values.size() && i < plot.times.size(); ++i) {
+                if (plot.times[i] < start) continue;
+                const float v = transform(s.values[i]);
+                lo = std::min(lo, v);
+                hi = std::max(hi, v);
+            }
+        }
+        if (plot.includeZero && !plot.log) {
+            lo = std::min(lo, 0.0f);
+            hi = std::max(hi, 0.0f);
+        }
+        if (hi - lo < 1e-4f) {
+            lo -= 1.0f;
+            hi += 1.0f;
+        }
+        const float pad = 0.1f * (hi - lo);
+        lo -= pad;
+        hi += pad;
+        if (!(plotLo_ < plotHi_)) {
+            plotLo_ = lo;
+            plotHi_ = hi;
+        }
+        const float ease = 1.0f - std::exp(-frameDt_ * 5.0f);
+        plotLo_ += (lo - plotLo_) * ease;
+        plotHi_ += (hi - plotHi_) * ease;
+        lo = plotLo_;
+        hi = plotHi_;
+    }
+    const auto toY = [&](float v) { return area.y + area.h - 6.0f - (v - lo) / (hi - lo) * (area.h - 12.0f); };
+
+    // Grid lines and their values. Counted in whole steps, so rounding can't stall the loop.
+    const float divisions = std::max(2.0f, area.h / 24.0f);
+    const float step = plot.log ? std::max(1.0f, std::round((hi - lo) / divisions)) : niceStep((hi - lo) / divisions);
+    const float firstTick = std::ceil(lo / step);
+    const int ticks = std::clamp(static_cast<int>(std::floor(hi / step) - firstTick) + 1, 0, 12);
+    canvas_.begin();
+    for (int i = 0; i < ticks; ++i) {
+        const float t = (firstTick + static_cast<float>(i)) * step;
+        const float gy = toY(t);
+        if (gy < area.y + 2.0f || gy > area.y + area.h - 2.0f) continue;
+        const bool zero = !plot.log && std::abs(t) < step * 0.01f;
+        canvas_.line({area.x + 4.0f, gy}, {area.x + area.w - 4.0f, gy}, 0.5f, gfx::uiHex(0xFFFFFF, zero ? 0.18f : 0.07f), 0.6f);
+    }
+    canvas_.end();
+    for (int i = 0; i < ticks; ++i) {
+        const float t = (firstTick + static_cast<float>(i)) * step;
+        const float gy = toY(t);
+        if (gy < area.y + 12.0f || gy > area.y + area.h - 2.0f) continue;
+        const std::string label = plot.log ? powerLabel(static_cast<int>(std::lround(t)))
+                                           : formatNumber(t, std::max(0, -static_cast<int>(std::floor(std::log10(step)))));
+        ui_.text(Face::Caption, label.c_str(), area.x + 6.0f, gy - 14.0f, kInkFaint);
+    }
+
+    // A tick each second along the bottom (every five on long plots), scrolling with the data.
+    const float tick = plot.span > 20.0f ? 5.0f : 1.0f;
+    const float firstSecond = std::ceil(start / tick);
+    canvas_.begin();
+    for (int i = 0; i <= static_cast<int>(plot.span / tick); ++i) {
+        const float t = (firstSecond + static_cast<float>(i)) * tick;
+        if (t > end) break;
+        const float tx = area.x + (t - start) / plot.span * area.w;
+        canvas_.line({tx, area.y + area.h - 4.0f}, {tx, area.y + area.h - 1.0f}, 0.6f, gfx::uiHex(0xFFFFFF, 0.25f), 0.6f);
+    }
+    canvas_.end();
+
+    // The lines themselves, newest on the right.
+    std::vector<Vec2> points;
+    canvas_.begin();
+    for (const auto& s : plot.series) {
+        points.clear();
+        for (size_t i = 0; i < s.values.size() && i < plot.times.size(); ++i) {
+            if (plot.times[i] < start) continue;
+            const float px = area.x + (plot.times[i] - start) / plot.span * area.w;
+            const float py = std::clamp(toY(transform(s.values[i])), area.y + 1.0f, area.y + area.h - 1.0f);
+            points.push_back({px, py});
+        }
+        const Col colour = gfx::uiHex(s.colour);
+        if (points.size() >= 2) canvas_.polyline(points.data(), static_cast<int>(points.size()), 1.3f, colour, 0.8f);
+        if (!points.empty()) canvas_.disc(points.back(), 2.6f, colour);
+    }
+    canvas_.end();
+
+}
+
+void App::drawInspector(float x, float y) {
+    const Body* b = selectedBody();
+    constexpr float kWidth = 226.0f;
+    if (b == nullptr) {
+        if (tool_ != Tool::Inspect) return;
+        const char* hint = "Click any moving body to read its mass, speed, momentum and energy.";
+        const float h = 16.0f + ui_.paragraph(Face::Caption, hint, 0.0f, 0.0f, kWidth - 32.0f, kInk, 1.45f, false) + 14.0f;
+        ui_.panel({x, y, kWidth, h}, 12.0f);
+        ui_.paragraph(Face::Caption, hint, x + 16.0f, y + 13.0f, kWidth - 32.0f, kInkDim, 1.45f);
+        return;
+    }
+
+    const float g = phys::length(scene_.world.gravity);
+    const float speed = phys::length(b->vel);
+    struct Row {
+        const char* label;
+        std::string value;
+    };
+    char buffer[64];
+    const auto number = [&](const char* pattern, float a, float c = 0.0f) {
+        std::snprintf(buffer, sizeof buffer, pattern, static_cast<double>(a), static_cast<double>(c));
+        return std::string(buffer);
+    };
+    std::vector<Row> rows = {
+        {"Mass m", number("%.2f kg", b->mass)},
+        {"Speed v", number("%.2f m/s", speed)},
+        {"Velocity", number("(%.2f, %.2f)", b->vel.x, b->vel.y)},
+        {"Momentum mv", number("%.2f kg·m/s", b->mass * speed)},
+        {"Kinetic ½mv²", number("%.2f J", 0.5f * b->mass * speed * speed)},
+        {"Spin ω", number("%.2f rad/s", b->angVel)},
+    };
+    if (g > 0.0f) {
+        rows.push_back({"Height y", number("%.2f m", b->pos.y)});
+        rows.push_back({"Potential mgy", number("%.2f J", b->mass * g * b->pos.y)});
+    }
+
+    const float h = 16.0f + 21.0f + static_cast<float>(rows.size()) * 19.0f + 10.0f;
+    ui_.panel({x, y, kWidth, h}, 12.0f);
+    ui_.text(Face::Small, "SELECTED BODY", x + 16.0f, y + 15.0f, kInkFaint);
+    float cursor = y + 37.0f;
+    for (const Row& row : rows) {
+        ui_.text(Face::Body, row.label, x + 16.0f, cursor, kInkSoft);
+        ui_.text(Face::Mono, row.value.c_str(), x + kWidth - 16.0f - ui_.textWidth(Face::Mono, row.value.c_str()), cursor + 1.5f, kInk);
+        cursor += 19.0f;
+    }
+}
+
+void App::drawDock(float screenW, float screenH) {
+    constexpr float kButton = 40.0f;
     constexpr float kGap = 3.0f;
-    constexpr float kPad = 7.0f;
-    struct Item {
+    constexpr float kPad = 6.0f;
+    struct ToolItem {
         Icon icon;
         Tool tool;
         const char* tip;
     };
-    const Item tools[6] = {{Icon::Grab, Tool::Grab, "Grab"},  {Icon::Ball, Tool::Ball, "Ball"}, {Icon::Box, Tool::Box, "Box"},
-                           {Icon::Gem, Tool::Gem, "Gem"},    {Icon::Bomb, Tool::Bomb, "Blast"}, {Icon::Pull, Tool::Pull, "Pull"}};
+    const ToolItem tools[3] = {{Icon::Inspect, Tool::Inspect, "Inspect   Q"},
+                               {Icon::Grab, Tool::Grab, "Grab   W"},
+                               {Icon::Throw, Tool::Throw, "Throw   E"}};
 
-    const float dockW = kPad * 2.0f + kButton * 10.0f + kGap * 7.0f + 22.0f;
-    const float stageCentre = kPanelWidth + (screenW - kPanelWidth) * 0.5f;
+    const float dockW = kPad * 2.0f + kButton * 9.0f + kGap * 6.0f + 22.0f;
+    const float stageCentre = kListWidth + (screenW - kListWidth - kLessonWidth) * 0.5f;
     const float dockX = stageCentre - dockW * 0.5f;
-    const float dockY = screenH - kButton - kPad * 2.0f - 16.0f;
-    ui_.panel({dockX, dockY, dockW, kButton + kPad * 2.0f}, 17.0f);
+    const float dockY = screenH - kButton - kPad * 2.0f - kMargin;
+    ui_.panel({dockX, dockY, dockW, kButton + kPad * 2.0f}, 16.0f);
 
     float x = dockX + kPad;
     const float y = dockY + kPad;
-    for (const Item& item : tools) {
+    for (const ToolItem& item : tools) {
         const auto id = reinterpret_cast<const void*>(static_cast<size_t>(item.tool) + 1);
-        if (ui_.iconButton(id, {x, y, kButton, kButton}, item.icon, tool_ == item.tool, item.tip)) {
-            tool_ = item.tool;
-        }
+        if (ui_.iconButton(id, {x, y, kButton, kButton}, item.icon, tool_ == item.tool, item.tip)) tool_ = item.tool;
         x += kButton + kGap;
     }
-    ui_.divider(x + 5.0f, y + 9.0f, kButton - 18.0f);
+    ui_.divider(x + 4.0f, y + 9.0f, kButton - 18.0f);
     x += 11.0f;
-    if (ui_.iconButton(&paused_, {x, y, kButton, kButton}, paused_ ? Icon::Play : Icon::Pause, false, paused_ ? "Play   Space" : "Pause   Space")) {
+    if (ui_.iconButton(&paused_, {x, y, kButton, kButton}, paused_ ? Icon::Play : Icon::Pause, false,
+                       paused_ ? "Play   Space" : "Pause   Space")) {
         paused_ = !paused_;
     }
     x += kButton + kGap;
@@ -890,69 +1433,86 @@ void App::drawHud() {
     x += kButton + kGap;
     if (ui_.iconButton(&sceneIndex_, {x, y, kButton, kButton}, Icon::Reset, false, "Restart   R")) reset();
     x += kButton + 11.0f;
-    ui_.divider(x - 5.0f, y + 9.0f, kButton - 18.0f);
-    if (ui_.iconButton(&showSettings_, {x, y, kButton, kButton}, Icon::Settings, showSettings_, "Settings   Tab")) {
+    ui_.divider(x - 4.0f, y + 9.0f, kButton - 18.0f);
+    if (ui_.iconButton(&slowMotion_, {x, y, kButton, kButton}, Icon::Slow, slowMotion_, "Slow motion   S")) {
+        slowMotion_ = !slowMotion_;
+    }
+    x += kButton + kGap;
+    if (ui_.iconButton(&vectorsOn_, {x, y, kButton, kButton}, Icon::Vectors, vectorsOn_, "Vectors   V")) {
+        vectorsOn_ = !vectorsOn_;
+    }
+    x += kButton + kGap;
+    const Box2 settingsButton{x, y, kButton, kButton};
+    if (ui_.iconButton(&showSettings_, settingsButton, Icon::Settings, showSettings_, "Settings   Tab")) {
         showSettings_ = !showSettings_;
     }
+    if (showSettings_) drawSettings({dockX, dockY, dockW, kButton + kPad * 2.0f});
+}
 
+void App::drawSettings(Box2 dock) {
+    constexpr float kWidth = 264.0f;
+    constexpr float kHeight = 392.0f;
+    const float px = dock.x + dock.w - kWidth;
+    const float py = std::max(dock.y - kHeight - 10.0f, 8.0f);
+    ui_.panel({px, py, kWidth, kHeight}, 16.0f);
+    const float left = px + 18.0f;
+    const float width = kWidth - 36.0f;
+    float cursor = py + 16.0f;
+    char value[48];
 
-    if (paused_) {
-        const char* label = "PAUSED";
-        const float w = ui_.textWidth(Face::Mono, label);
-        ui_.text(Face::Mono, label, screenW - w - 20.0f, 40.0f, accent);
-    }
-
-    if (showSettings_) {
-        constexpr float kWidth = 244.0f;
-        constexpr float kHeight = 416.0f;
-        const float px = screenW - kWidth - 16.0f;
-        const float py = std::max(dockY - kHeight - 10.0f, 8.0f);  // above the dock, never over it
-        ui_.panel({px, py, kWidth, kHeight}, 16.0f);
-        const float left = px + 18.0f;
-        const float width = kWidth - 36.0f;
-        float cursor = py + 16.0f;
-        char value[32];
-
-        std::snprintf(value, sizeof value, "%.2f\xC3\x97", static_cast<double>(gravityScale_));
-        if (ui_.slider(&gravityScale_, {left, cursor, width, 40.0f}, "Gravity", value, gravityScale_, -1.0f, 3.0f)) {
-            if (std::abs(gravityScale_ - 1.0f) < 0.04f) gravityScale_ = 1.0f;
-            if (std::abs(gravityScale_) < 0.04f) gravityScale_ = 0.0f;
+    if (phys::length(scene_.baseGravity) > 0.0f) {
+        std::snprintf(value, sizeof value, "%.1f m/s²", static_cast<double>(gravity_));
+        if (ui_.slider(&gravity_, {left, cursor, width, 40.0f}, "Gravity g", value, gravity_, 0.0f, 25.0f)) {
+            gravity_ = std::round(gravity_ * 10.0f) / 10.0f;
             applyGravity();
         }
-        cursor += 46.0f;
-
-        std::snprintf(value, sizeof value, "%.2f\xC3\x97", static_cast<double>(timeScale_));
-        if (ui_.slider(&timeScale_, {left, cursor, width, 40.0f}, "Time", value, timeScale_, 0.05f, 2.0f)) {
-            if (std::abs(timeScale_ - 1.0f) < 0.03f) timeScale_ = 1.0f;
+        cursor += 42.0f;
+        // Real places to try. The lessons start at 10, Earth's 9.81 rounded.
+        const struct {
+            const char* name;
+            float g;
+        } places[4] = {{"Moon", 1.6f}, {"Mars", 3.7f}, {"Earth", 9.8f}, {"Jupiter", 24.8f}};
+        float lx = left;
+        for (const auto& place : places) {
+            if (ui_.link(&place, lx, cursor, place.name)) {
+                gravity_ = place.g;
+                applyGravity();
+            }
+            lx += ui_.textWidth(Face::Caption, place.name) + 16.0f;
         }
-        cursor += 46.0f;
-
-        std::snprintf(value, sizeof value, "%.2f", static_cast<double>(bounce_));
-        if (ui_.slider(&bounce_, {left, cursor, width, 40.0f}, "Extra bounce", value, bounce_, 0.0f, 1.0f)) {
-            scene_.world.minRestitution = bounce_;
-        }
-        cursor += 46.0f;
-
-        std::snprintf(value, sizeof value, "%d", static_cast<int>(std::round(substepSetting_)));
-        if (ui_.slider(&substepSetting_, {left, cursor, width, 40.0f}, "Substeps", value, substepSetting_, 1.0f, 20.0f)) {
-            scene_.world.substeps = static_cast<int>(std::round(substepSetting_));
-        }
-        cursor += 50.0f;
-
-        constexpr float kToggle = 27.0f;
-        ui_.toggle(&trailsOn_, {left, cursor, width, kToggle}, "Trails", "T", trailsOn_);
-        cursor += kToggle;
-        ui_.toggle(&sparksOn_, {left, cursor, width, kToggle}, "Sparks", "", sparksOn_);
-        cursor += kToggle;
-        ui_.toggle(&bloomOn_, {left, cursor, width, kToggle}, "Bloom", "B", bloomOn_);
-        cursor += kToggle;
-        ui_.toggle(&heatView_, {left, cursor, width, kToggle}, "Colour by speed", "V", heatView_);
-        cursor += kToggle;
-        ui_.toggle(&debugOn_, {left, cursor, width, kToggle}, "Show contacts", "C", debugOn_);
-        cursor += kToggle + 10.0f;
-
-        ui_.text(Face::Body, "Scroll zooms. H hides all of this.", left, cursor, inkFaint);
+        cursor += 26.0f;
+    } else {
+        ui_.text(Face::Label, "Gravity g", left, cursor, kInkDim);
+        ui_.paragraph(Face::Caption, "This lesson has no uniform gravity.", left, cursor + 20.0f, width, kInkFaint);
+        cursor += 68.0f;
     }
 
-    ui_.endFrame();
+    std::snprintf(value, sizeof value, "%.2f×", static_cast<double>(timeScale_));
+    if (ui_.slider(&timeScale_, {left, cursor, width, 40.0f}, "Time", value, timeScale_, 0.05f, 2.0f)) {
+        if (std::abs(timeScale_ - 1.0f) < 0.03f) timeScale_ = 1.0f;
+    }
+    cursor += 46.0f;
+
+    std::snprintf(value, sizeof value, "%d", static_cast<int>(std::round(substepSetting_)));
+    if (ui_.slider(&substepSetting_, {left, cursor, width, 40.0f}, "Solver substeps", value, substepSetting_, 1.0f, 20.0f)) {
+        scene_.world.substeps = static_cast<int>(std::round(substepSetting_));
+    }
+    cursor += 50.0f;
+
+    constexpr float kToggle = 27.0f;
+    ui_.toggle(&trailsOn_, {left, cursor, width, kToggle}, "Trails", "T", trailsOn_);
+    cursor += kToggle;
+    ui_.toggle(&bloomOn_, {left, cursor, width, kToggle}, "Bloom", "B", bloomOn_);
+    cursor += kToggle;
+    ui_.toggle(&sparksOn_, {left, cursor, width, kToggle}, "Sparks on impacts", "", sparksOn_);
+    cursor += kToggle;
+    ui_.toggle(&heatView_, {left, cursor, width, kToggle}, "Colour by speed", "K", heatView_);
+    cursor += kToggle;
+    ui_.toggle(&debugOn_, {left, cursor, width, kToggle}, "Contact points", "C", debugOn_);
+    cursor += kToggle + 12.0f;
+
+    const phys::WorldStats& s = scene_.world.stats();
+    std::snprintf(value, sizeof value, "%.0f fps · %d bodies · %.1f ms", static_cast<double>(statFps_), s.bodies,
+                  static_cast<double>(statPhysicsMs_));
+    ui_.text(Face::Mono, value, left, cursor, kInkFaint);
 }

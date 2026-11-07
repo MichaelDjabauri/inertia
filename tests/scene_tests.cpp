@@ -1,6 +1,8 @@
-// Runs every scene headless and checks that it does what its description claims.
+// Runs every lesson headless and checks that what it measures agrees with the theory it teaches.
 #include <cmath>
 #include <cstdio>
+#include <string>
+#include <string_view>
 
 #include "scenes/scene.hpp"
 
@@ -12,28 +14,15 @@ namespace {
 constexpr float kDt = 1.0f / 60.0f;
 int failures = 0;
 
-void expect(bool ok, const char* name, const char* what, double value = 0.0) {
+void expect(bool ok, const char* name, const std::string& what, double value = 0.0) {
     if (ok) return;
     ++failures;
-    std::printf("    FAIL  %s: %s (%.3f)\n", name, what, value);
+    std::printf("    FAIL  %s: %s (%.4f)\n", name, what.c_str(), value);
 }
 
 void advance(Scene& s, float seconds) {
-    const Input input;
     const int steps = static_cast<int>(std::lround(seconds / kDt));
-    for (int i = 0; i < steps; ++i) {
-        if (s.update) s.update(s, input, kDt);
-        s.world.step(kDt);
-        s.time += kDt;
-    }
-}
-
-bool allFinite(const Scene& s) {
-    for (const Body& b : s.world.bodies()) {
-        if (!b.alive) continue;
-        if (!std::isfinite(b.pos.x) || !std::isfinite(b.pos.y) || !std::isfinite(b.angle)) return false;
-    }
-    return true;
+    for (int i = 0; i < steps; ++i) s.step(kDt);
 }
 
 int findScene(const char* name) {
@@ -45,18 +34,56 @@ int findScene(const char* name) {
     std::abort();
 }
 
+void load(Scene& s, const char* name, const std::vector<float>& presets = {}) {
+    loadScene(s, findScene(name), presets);
+}
+
+const Readout* find(const Scene& s, const char* lesson, const char* label) {
+    const Readout* r = s.readout(label);
+    expect(r != nullptr, lesson, std::string("no readout called ") + label);
+    return r;
+}
+
+// The measurement is within `tolerance` of the theory, relative to the theory's size.
+void agrees(const Scene& s, const char* lesson, const char* label, float tolerance) {
+    const Readout* r = find(s, lesson, label);
+    if (r == nullptr) return;
+    const float error = std::abs(r->value - r->expected) / std::max(std::abs(r->expected), 1e-3f);
+    expect(std::isfinite(r->value) && error <= tolerance, lesson, std::string(label) + " should match the theory", r->value);
+    std::printf("  %-18s %-24s %10.3f  theory %10.3f  (%5.2f%% off)\n", lesson, label, r->value, r->expected, 100.0f * error);
+}
+
+// The measurement is within `tolerance` of `target`, in its own units.
+void near(const Scene& s, const char* lesson, const char* label, float target, float tolerance) {
+    const Readout* r = find(s, lesson, label);
+    if (r == nullptr) return;
+    expect(std::isfinite(r->value) && std::abs(r->value - target) <= tolerance, lesson,
+           std::string(label) + " should be near " + std::to_string(target), r->value);
+    std::printf("  %-18s %-24s %10.3f  wanted %10.3f\n", lesson, label, r->value, target);
+}
+
+float value(const Scene& s, const char* lesson, const char* label) {
+    const Readout* r = find(s, lesson, label);
+    return r != nullptr ? r->value : NAN;
+}
+
+bool allFinite(const Scene& s) {
+    for (const Body& b : s.world.bodies()) {
+        if (!b.alive) continue;
+        if (!std::isfinite(b.pos.x) || !std::isfinite(b.pos.y) || !std::isfinite(b.angle)) return false;
+    }
+    return true;
+}
+
 void testEverySceneRuns() {
     const auto& list = sceneList();
     Scene s;
     for (size_t i = 0; i < list.size(); ++i) {
         loadScene(s, static_cast<int>(i));
+        expect(!s.readouts.empty(), list[i].name, "should measure something");
         float worst = 0.0f;
-        const int steps = 60 * 12;
-        const Input input;
-        for (int k = 0; k < steps; ++k) {
-            if (s.update) s.update(s, input, kDt);
-            s.world.step(kDt);
-            s.time += kDt;
+        for (int k = 0; k < 60 * 12; ++k) {
+            s.step(kDt);
             worst = std::max(worst, s.world.stats().collideMs + s.world.stats().solveMs);
         }
         expect(allFinite(s), list[i].name, "positions went non-finite");
@@ -65,174 +92,218 @@ void testEverySceneRuns() {
     }
 }
 
-void testCradle() {
+void testProjectile() {
     Scene s;
-    loadScene(s, findScene("Newton's Cradle"));
-    std::vector<int> balls;
-    for (int i = 0; i < static_cast<int>(s.world.bodies().size()); ++i) {
-        const Body& b = s.world.bodies()[i];
-        if (b.alive && b.isDynamic()) balls.push_back(i);
-    }
-    const float start = s.world.bodies()[balls.front()].pos.y;
-    const float bottom = s.world.bodies()[balls.back()].pos.y;
-    float peak = 0.0f, middle = 0.0f;
-    for (int i = 0; i < 60 * 4; ++i) {  // half a swing is 3.3 s
-        advance(s, kDt);
-        peak = std::max(peak, s.world.bodies()[balls.back()].pos.y);
-        middle = std::max(middle, s.world.bodies()[balls[2]].pos.y - bottom);
-    }
-    const float share = (peak - bottom) / (start - bottom);
-    expect(share > 0.93f, "cradle", "far ball should rise as high as the first was released", share);
-    expect(middle < 0.1f, "cradle", "middle ball should barely move", middle);
-    std::printf("  cradle: far ball rises to %.1f%% of release height; middle ball lifts %.3f m\n", 100.0f * share, middle);
+    load(s, "Projectile Motion");
+    advance(s, 4.0f);
+    agrees(s, "projectile", "Range", 0.01f);
+    agrees(s, "projectile", "Time of flight", 0.01f);
+    agrees(s, "projectile", "Highest point", 0.01f);
+
+    // Complementary angles land in the same place.
+    load(s, "Projectile Motion", {12.0f, 30.0f});
+    advance(s, 3.0f);
+    const float low = value(s, "projectile", "Range");
+    load(s, "Projectile Motion", {12.0f, 60.0f});
+    advance(s, 3.5f);
+    const float high = value(s, "projectile", "Range");
+    expect(std::abs(low - high) < 0.02f * low, "projectile", "30° and 60° should land together", high - low);
+    std::printf("  %-18s 30° lands at %.2f m, 60° at %.2f m\n", "projectile", low, high);
 }
 
-void testPyramidFalls() {
+void testFriction() {
     Scene s;
-    loadScene(s, findScene("Pyramid"));
+    load(s, "Friction on a Slope");  // 18°: only μ 0.2 slides
+    advance(s, 2.0f);
+    agrees(s, "friction 18°", "a, block μ = 0.2", 0.03f);
+    near(s, "friction 18°", "a, block μ = 0.4", 0.0f, 0.02f);
+    near(s, "friction 18°", "a, block μ = 0.6", 0.0f, 0.02f);
+
+    load(s, "Friction on a Slope", {30.0f});
+    advance(s, 1.5f);
+    agrees(s, "friction 30°", "a, block μ = 0.2", 0.03f);
+    agrees(s, "friction 30°", "a, block μ = 0.4", 0.03f);
+    near(s, "friction 30°", "a, block μ = 0.6", 0.0f, 0.02f);
+}
+
+void testBalance() {
+    Scene s;
+    load(s, "Centre of Mass");
+    advance(s, 5.0f);
+    const Readout* r = find(s, "balance", "Stack");
+    expect(r != nullptr && r->text == "standing", "balance", "a stack at 90% of the limit should stand");
+    agrees(s, "balance", "Top block reaches", 0.02f);
+
+    load(s, "Centre of Mass", {10.0f, 95.0f});
+    advance(s, 5.0f);
+    r = find(s, "balance 10", "Stack");
+    expect(r != nullptr && r->text == "standing", "balance", "ten blocks at 95% should still stand");
+
+    load(s, "Centre of Mass", {6.0f, 115.0f});
+    advance(s, 5.0f);
+    r = find(s, "balance", "Stack");
+    expect(r != nullptr && r->text == "toppled", "balance", "a stack past the limit should fall");
+}
+
+void testChain() {
+    Scene s;
+    load(s, "Hanging Chain");
+    advance(s, 6.0f);
+    agrees(s, "chain", "Lift at each anchor", 0.03f);
+    agrees(s, "chain", "Sideways pull H", 0.05f);
+    agrees(s, "chain", "Tension at anchor", 0.05f);
+    agrees(s, "chain", "Tension at bottom", 0.06f);
+    agrees(s, "chain", "Sag", 0.05f);
+
+    load(s, "Hanging Chain", {120.0f, 20.0f});
+    advance(s, 20.0f);  // the weight bounces for a while first
+    agrees(s, "chain + 20 kg", "Lift at each anchor", 0.03f);
+}
+
+void testCollisions() {
+    Scene s;
+    load(s, "Collisions");
     advance(s, 2.5f);
-    int moved = 0;
-    for (const Body& b : s.world.bodies()) {
-        if (b.alive && b.isDynamic() && std::abs(b.angle) > 0.05f) ++moved;
+    agrees(s, "collision 1:1", "Momentum after", 0.01f);
+    agrees(s, "collision 1:1", "Energy after", 0.02f);
+    near(s, "collision 1:1", "A's velocity after", 0.0f, 0.1f);
+    agrees(s, "collision 1:1", "B's velocity after", 0.02f);
+
+    load(s, "Collisions", {2.0f, 6.0f, 0.5f});
+    advance(s, 2.5f);
+    agrees(s, "collision 1:3", "Momentum after", 0.01f);
+    agrees(s, "collision 1:3", "Energy after", 0.04f);
+    agrees(s, "collision 1:3", "A's velocity after", 0.04f);
+    agrees(s, "collision 1:3", "B's velocity after", 0.03f);
+
+    load(s, "Collisions", {2.0f, 2.0f, 0.0f});
+    advance(s, 2.5f);
+    agrees(s, "collision e = 0", "Momentum after", 0.01f);
+    agrees(s, "collision e = 0", "Energy after", 0.04f);
+}
+
+void testCradle() {
+    Scene s;
+    for (const float lifted : {1.0f, 2.0f}) {
+        load(s, "Newton's Cradle", {lifted});
+        advance(s, 5.0f);
+        near(s, lifted == 1.0f ? "cradle, 1 lifted" : "cradle, 2 lifted", "Balls swinging out", lifted, 0.0f);
+        agrees(s, lifted == 1.0f ? "cradle, 1 lifted" : "cradle, 2 lifted", "Rebound height", 0.07f);
     }
-    expect(moved == 0, "pyramid", "should stand before the cannonball arrives", moved);
-    advance(s, 3.0f);
-    moved = 0;
-    for (const Body& b : s.world.bodies()) {
-        if (b.alive && b.isDynamic() && std::abs(b.angle) > 0.05f) ++moved;
-    }
-    expect(moved > 30, "pyramid", "cannonball should bring it down", moved);
-    std::printf("  pyramid: %d boxes knocked over by the cannonball\n", moved);
+}
+
+void testPendulum() {
+    Scene s;
+    load(s, "Pendulum");
+    advance(s, 12.0f);
+    agrees(s, "pendulum 30°", "Period T", 0.01f);
+    agrees(s, "pendulum 30°", "Total energy", 0.01f);
+
+    load(s, "Pendulum", {8.0f, 9.0f, 80.0f});
+    advance(s, 12.0f);
+    agrees(s, "pendulum 80°", "Period T", 0.01f);
+    const float formula = value(s, "pendulum 80°", "2π√(L/g)");
+    expect(value(s, "pendulum 80°", "Period T") > 1.1f * formula, "pendulum", "big swings should take longer");
+}
+
+void testSprings() {
+    Scene s;
+    load(s, "Springs & Damping");
+    advance(s, 10.0f);
+    agrees(s, "springs", "Period, ζ = 0.10", 0.02f);
+    agrees(s, "springs", "Settles, ζ = 1", 0.06f);
+    agrees(s, "springs", "Settles, ζ = 2.5", 0.06f);
+
+    load(s, "Springs & Damping", {80.0f, 1.0f, 0.05f});
+    advance(s, 6.0f);
+    agrees(s, "stiff springs", "Period, ζ = 0.05", 0.02f);
 }
 
 void testDominoes() {
     Scene s;
-    loadScene(s, findScene("Dominoes"));
-    int last = -1;
-    for (int i = 0; i < static_cast<int>(s.world.bodies().size()); ++i) {
-        const Body& b = s.world.bodies()[i];
-        if (b.alive && b.isDynamic()) last = i;
+    for (const float ratio : {1.0f, 1.1f, 1.2f, 1.3f}) {
+        load(s, "Dominoes", {ratio});
+        advance(s, 16.0f);
+        const Readout* r = find(s, "dominoes", "Dominoes fallen");
+        if (r == nullptr) continue;
+        // The lesson says the chain breaks once each domino is too much bigger than the last.
+        if (ratio < 1.25f) {
+            expect(r->value == r->expected, "dominoes", "every domino should fall at ratio " + std::to_string(ratio), r->value);
+        } else {
+            expect(r->value < r->expected, "dominoes", "the chain should stop at ratio " + std::to_string(ratio), r->value);
+        }
+        std::printf("  %-18s ratio %.2f: %.0f of %.0f fell, energy amplified %.0f×\n", "dominoes", ratio, r->value, r->expected,
+                    value(s, "dominoes", "Amplification"));
     }
-    advance(s, 14.0f);
-    int fallen = 0, total = 0;
-    for (const Body& b : s.world.bodies()) {
-        if (!b.alive || !b.isDynamic() || b.shape.type != phys::ShapeType::Polygon) continue;
-        ++total;
-        if (std::abs(b.angle) > 0.5f) ++fallen;
-    }
-    expect(fallen == total, "dominoes", "every domino should topple", fallen);
-    expect(std::abs(s.world.bodies()[last].angle) > 0.5f, "dominoes", "last domino should fall");
-    std::printf("  dominoes: %d of %d toppled\n", fallen, total);
+}
+
+void testOrbit() {
+    Scene s;
+    load(s, "Orbits");
+    advance(s, 12.0f);
+    agrees(s, "orbit 85%", "Period", 0.01f);
+    agrees(s, "orbit 85%", "r × v", 0.005f);
+    agrees(s, "orbit 85%", "Energy per kg", 0.01f);
+    agrees(s, "orbit 85%", "Area per interval", 0.01f);
+
+    load(s, "Orbits", {150.0f});
+    advance(s, 10.0f);
+    expect(value(s, "orbit 150%", "Distance r") > 50.0f, "orbit", "150% of circular speed should escape");
 }
 
 void testGalton() {
     Scene s;
-    loadScene(s, findScene("Galton Board"));
+    load(s, "Galton Board");
     advance(s, 26.0f);
-    // Mean and spread of where the balls landed, against the binomial prediction.
-    const float theory = 0.5f * std::sqrt(15.0f);
-    float sum = 0.0f, sumSq = 0.0f;
-    int n = 0, escaped = 0;
-    for (const Body& b : s.world.bodies()) {
-        if (!b.alive || !b.isDynamic()) continue;
-        if (std::abs(b.pos.x) > 7.8f) ++escaped;
-        if (b.pos.y > 12.0f) continue;
-        sum += b.pos.x;
-        sumSq += b.pos.x * b.pos.x;
-        ++n;
-    }
-    const float mean = sum / static_cast<float>(n);
-    const float sd = std::sqrt(sumSq / static_cast<float>(n) - mean * mean);
-    expect(n >= 335, "galton", "almost all balls should reach the bins", n);
-    expect(std::abs(mean) < 0.3f, "galton", "pile should be centred", mean);
-    expect(std::abs(sd - theory) < 0.3f, "galton", "spread should match the binomial", sd);
-    expect(escaped == 0, "galton", "no ball should leave the board", escaped);
-    std::printf("  galton: %d balls landed, mean %.2f, sd %.2f (binomial predicts %.2f)\n", n, mean, sd, theory);
+    expect(value(s, "galton", "Balls landed") >= 335.0f, "galton", "almost all balls should reach the bins");
+    near(s, "galton", "Mean position", 0.0f, 0.3f);
+    agrees(s, "galton", "Spread σ", 0.1f);
 }
 
-void testDrumStaysRound() {
+void testDrum() {
     Scene s;
-    loadScene(s, findScene("Tumbling Drum"));
-    advance(s, 15.0f);
+    load(s, "Mixing & Entropy");
+    advance(s, 1.0f);
+    const float start = value(s, "drum", "Mixing entropy");
+    advance(s, 40.0f);
+    const float mixed = value(s, "drum", "Mixing entropy");
+    s.params[0].value = -s.params[0].value;  // run it backwards
+    advance(s, 20.0f);
+    const float reversed = value(s, "drum", "Mixing entropy");
+    expect(start < 0.45f, "drum", "should start sorted", start);
+    expect(mixed > 0.75f, "drum", "should end up mixed", mixed);
+    expect(reversed > 0.7f, "drum", "running it backwards should not unmix it", reversed);
     int escaped = 0;
     for (const Body& b : s.world.bodies()) {
-        if (!b.alive || !b.isDynamic()) continue;
-        if (phys::length(b.pos - Vec2{0.0f, 11.8f}) > 12.5f) ++escaped;
+        if (b.alive && b.isDynamic() && phys::length(b.pos - Vec2{0.0f, 11.8f}) > 12.5f) ++escaped;
     }
     expect(escaped == 0, "drum", "no ball should leave the drum", escaped);
-    std::printf("  drum: %d escaped\n", escaped);
+    std::printf("  %-18s entropy %.2f at 1 s, %.2f at 41 s, %.2f after 20 s in reverse\n", "drum", start, mixed, reversed);
 }
 
-void testOrbitsStayBound() {
+void testChaos() {
     Scene s;
-    loadScene(s, findScene("Binary Stars"));
-    advance(s, 60.0f);
-    int lost = 0, total = 0;
-    for (const Body& b : s.world.bodies()) {
-        if (!b.alive || !b.isDynamic()) continue;
-        ++total;
-        if (phys::length(b.pos) > 90.0f) ++lost;
-    }
-    expect(lost < total / 20, "orbits", "most bodies should stay in orbit for a minute", lost);
-    std::printf("  orbits: %d of %d flung out after 60 s\n", lost, total);
-}
-
-void testChaosDiverges() {
-    Scene s;
-    loadScene(s, findScene("Chaos"));
-    std::vector<int> bobs;
-    for (int i = 0; i < static_cast<int>(s.world.bodies().size()); ++i) {
-        const Body& b = s.world.bodies()[i];
-        if (b.alive && b.isDynamic() && b.trail) bobs.push_back(i);
-    }
-    const float energyStart = s.world.totalEnergy();
-    auto spread = [&] {
+    load(s, "Chaos");
+    auto gap = [&]() {
         float most = 0.0f;
-        for (const int id : bobs) {
-            most = std::max(most, phys::length(s.world.bodies()[id].pos - s.world.bodies()[bobs[0]].pos));
+        std::vector<int> bobs;
+        for (int i = 0; i < static_cast<int>(s.world.bodies().size()); ++i) {
+            if (s.world.bodies()[i].trail) bobs.push_back(i);
         }
-        return most;
+        return phys::length(s.world.bodies()[bobs.front()].pos - s.world.bodies()[bobs.back()].pos) + most;
     };
     advance(s, 3.0f);
-    const float early = spread();
+    const float early = gap();
     advance(s, 22.0f);
-    const float late = spread();
-    const float energyDrift = std::abs(s.world.totalEnergy() - energyStart);
+    const float late = gap();
     expect(early < 1.5f, "chaos", "pendulums should agree at first", early);
-    expect(late > 6.0f, "chaos", "pendulums should end up nowhere near each other", late);
-    std::printf("  chaos: spread %.2f m at 3 s, %.2f m at 25 s; energy drift %.1f of %.1f\n", early, late, energyDrift,
-                std::abs(energyStart));
-}
+    expect(late > 3.0f, "chaos", "pendulums should end up far apart", late);
 
-void testRoverDrives() {
-    Scene s;
-    loadScene(s, findScene("Rover"));
-    const int car = s.follow;
-    float upside = 0.0f;
-    advance(s, 2.0f);
-    const float x0 = s.world.bodies()[car].pos.x;
-    for (int i = 0; i < 60 * 70; ++i) {
-        advance(s, kDt);
-        upside = std::max(upside, std::abs(std::remainder(s.world.bodies()[car].angle, 2.0f * phys::kPi)));
-    }
-    const float travelled = s.world.bodies()[car].pos.x - x0;
-    expect(travelled > 450.0f, "rover", "should keep driving over the hills", travelled);
-    expect(upside < 2.0f, "rover", "should not end up on its roof", upside);
-    std::printf("  rover: drove %.0f m in 70 s, worst tilt %.2f rad, %.0f m/s at the end\n", travelled, upside,
-                phys::length(s.world.bodies()[car].vel));
-}
-
-void testJellyHoldsTogether() {
-    Scene s;
-    loadScene(s, findScene("Jelly"));
-    advance(s, 14.0f);
-    float worst = 0.0f;
-    for (const Blob& blob : s.blobs) {
-        const Vec2 c = s.world.bodies()[blob.centre].pos;
-        for (const int id : blob.ring) worst = std::max(worst, phys::length(s.world.bodies()[id].pos - c));
-    }
-    expect(worst < 6.0f, "jelly", "blobs should not burst", worst);
-    std::printf("  jelly: furthest ring particle %.2f m from its centre\n", worst);
+    load(s, "Chaos", {20.0f, -3.0f});
+    advance(s, 25.0f);
+    const float calm = gap();
+    expect(calm < 0.5f, "chaos", "small swings should not be chaotic", calm);
+    std::printf("  %-18s at 143°: gap %.3f m at 3 s, %.2f m at 25 s; at 20°: %.4f m at 25 s\n", "chaos", early, late, calm);
 }
 
 }  // namespace
@@ -240,15 +311,19 @@ void testJellyHoldsTogether() {
 int main() {
     testEverySceneRuns();
     std::puts("");
+    testProjectile();
+    testFriction();
+    testBalance();
+    testChain();
+    testCollisions();
     testCradle();
-    testPyramidFalls();
+    testPendulum();
+    testSprings();
     testDominoes();
+    testOrbit();
     testGalton();
-    testDrumStaysRound();
-    testOrbitsStayBound();
-    testChaosDiverges();
-    testRoverDrives();
-    testJellyHoldsTogether();
+    testDrum();
+    testChaos();
     std::printf("\n%d failed\n", failures);
     return failures == 0 ? 0 : 1;
 }
