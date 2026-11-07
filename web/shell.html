@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Inertia</title>
   <link rel="icon" href="data:,">
-  <meta name="description" content="A 2D rigid-body physics sandbox written in C++ and running in your browser.">
+  <meta name="description" content="An interactive physics lab: thirteen experiments that explain a principle, measure what happens and compare it with the theory.">
   <style>
     html, body {
       height: 100%;
@@ -40,7 +40,7 @@
   </style>
 </head>
 <body>
-  <canvas id="canvas" aria-label="Inertia physics simulation" oncontextmenu="event.preventDefault()"></canvas>
+  <canvas id="canvas" aria-label="Inertia physics lab" oncontextmenu="event.preventDefault()"></canvas>
   <div id="status" role="status">Loading…</div>
   <noscript>Inertia needs JavaScript and WebGL 2 to run.</noscript>
   <script>
@@ -64,7 +64,7 @@
       change?.catch(() => {});
     });
 
-    // index.html?scene=8 opens on a particular scene.
+    // index.html?scene=8 opens on a particular lesson.
     const scene = new URLSearchParams(location.search).get('scene');
 
     var Module = {

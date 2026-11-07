@@ -10,13 +10,14 @@ namespace {
 void usage() {
     std::puts(
         "inertia [options]\n"
-        "  --scene N       start on scene N (0-11)\n"
+        "  --scene N       start on lesson N (0-12)\n"
         "  --size WxH      window size in points\n"
         "  --frames N      run N fixed frames, then exit\n"
         "  --shot PATH     save a PNG of the last frame (needs --frames)\n"
         "  --no-ui         start with the interface hidden\n"
         "  --settings      start with the settings panel open\n"
-        "  --tool NAME     ball, box, gem, bomb or pull\n"
+        "  --experiment    open the lesson on its Experiment tab\n"
+        "  --tool NAME     inspect, grab or throw\n"
         "  --benchmark     print frame timings on exit (needs --frames)\n"
         "  --render-scale  scene resolution relative to the window; automatic if unset\n"
         "  --script TEXT   scripted input for captures, such as \"60:press:400,300;90:release\"\n"
@@ -51,6 +52,8 @@ int main(int argc, char** argv) {
             options.hideUi = true;
         } else if (arg == "--settings") {
             options.showSettings = true;
+        } else if (arg == "--experiment") {
+            options.experimentTab = true;
         } else if (arg == "--tool") {
             options.toolName = next();
         } else if (arg == "--benchmark") {

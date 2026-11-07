@@ -21,10 +21,19 @@ Color toColor(const Col& c) {
     return {byte(c.r), byte(c.g), byte(c.b), byte(c.a)};
 }
 
+// ASCII, Latin-1, Greek, and the punctuation and maths symbols the lessons use.
 std::vector<int> fontCodepoints() {
     std::vector<int> codes;
     for (int c = 32; c < 127; ++c) codes.push_back(c);
-    for (const int c : {0x00B7, 0x00D7, 0x2013, 0x2014, 0x2190, 0x2191, 0x2192, 0x2193}) codes.push_back(c);
+    for (int c = 0xA0; c <= 0xFF; ++c) codes.push_back(c);
+    for (int c = 0x391; c <= 0x3C9; ++c) codes.push_back(c);
+    for (int c = 0x2080; c <= 0x2089; ++c) codes.push_back(c);
+    for (int c = 0x2074; c <= 0x2079; ++c) codes.push_back(c);
+    for (const int c : {0x1D62, 0x2013, 0x2014, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2026, 0x2070, 0x207B,
+                        0x207F, 0x2153, 0x2190, 0x2191, 0x2192, 0x2193, 0x2212, 0x221A, 0x221E, 0x2248, 0x2260,
+                        0x2264, 0x2265}) {
+        codes.push_back(c);
+    }
     return codes;
 }
 
@@ -45,6 +54,10 @@ void Ui::load(const char* fontDir, float dpi) {
     loadFace(Face::Strong, "Inter-SemiBold.ttf", 13.0f, 0.0f);
     loadFace(Face::Title, "Inter-SemiBold.ttf", 26.0f, -0.3f);
     loadFace(Face::Mono, "JetBrainsMono-Regular.ttf", 11.5f, 0.0f);
+    loadFace(Face::Heading, "Inter-SemiBold.ttf", 20.0f, -0.2f);
+    loadFace(Face::Equation, "Inter-Medium.ttf", 14.5f, 0.0f);
+    loadFace(Face::Small, "Inter-SemiBold.ttf", 10.0f, 0.7f);
+    loadFace(Face::Caption, "Inter-Medium.ttf", 11.5f, 0.0f);
 }
 
 void Ui::unload() {
@@ -98,6 +111,76 @@ void Ui::text(Face f, const char* string, float x, float y, Col colour) {
     DrawTextEx(t.font, string, at, t.size, t.spacing, toColor(colour));
 }
 
+void Ui::textOverScene(Face f, const char* string, float x, float y, Col colour) {
+    const Col shade = uiHex(0x05060A, 0.55f * colour.a);
+    for (const Vec2 d : {Vec2{-0.8f, 0.0f}, Vec2{0.8f, 0.0f}, Vec2{0.0f, -0.8f}, Vec2{0.0f, 0.8f}}) {
+        text(f, string, x + d.x, y + d.y, shade);
+    }
+    text(f, string, x, y, colour);
+}
+
+float Ui::paragraph(Face f, const char* string, float x, float y, float width, Col colour, float leading, bool draw) {
+    const TypeFace& t = face(f);
+    const float step = std::round(t.size * leading);
+    const float space = MeasureTextEx(t.font, " ", t.size, t.spacing).x + t.spacing;
+    std::string line;
+    float lineWidth = 0.0f;
+    float cursor = y;
+    const auto flush = [&] {
+        const bool visible = !clipping_ || (cursor + step > clip_.y && cursor < clip_.y + clip_.h);
+        if (draw && visible && !line.empty()) text(f, line.c_str(), x, cursor, colour);
+        cursor += step;
+        line.clear();
+        lineWidth = 0.0f;
+    };
+    const char* p = string;
+    for (;;) {
+        const char* start = p;
+        while (*p != '\0' && *p != ' ' && *p != '\n') ++p;
+        if (p > start) {
+            const std::string word(start, p);
+            const float w = MeasureTextEx(t.font, word.c_str(), t.size, t.spacing).x;
+            if (!line.empty() && lineWidth + space + w > width) flush();
+            if (!line.empty()) {
+                line += ' ';
+                lineWidth += space;
+            }
+            line += word;
+            lineWidth += w;
+        }
+        if (*p == '\n') {
+            flush();
+            ++p;
+        } else if (*p == ' ') {
+            ++p;
+        } else {
+            break;
+        }
+    }
+    if (!line.empty()) flush();
+    if (cursor <= y) return 0.0f;
+    // The last line only needs the type's own height, not a full step below it.
+    return cursor - y - (step - t.size * 1.25f);
+}
+
+void Ui::beginClip(Box2 box) {
+    rlDrawRenderBatchActive();
+    rlEnableScissorTest();
+    const float framebuffer = static_cast<float>(GetRenderHeight());
+    rlScissor(static_cast<int>(std::floor(box.x * dpi_)), static_cast<int>(std::floor(framebuffer - (box.y + box.h) * dpi_)),
+              static_cast<int>(std::ceil(box.w * dpi_)), static_cast<int>(std::ceil(box.h * dpi_)));
+    clip_ = box;
+    clipping_ = true;
+}
+
+void Ui::endClip() {
+    rlDrawRenderBatchActive();
+    rlDisableScissorTest();
+    clipping_ = false;
+}
+
+bool Ui::hit(Box2 box) const { return box.contains(mouse_) && (!clipping_ || clip_.contains(mouse_)); }
+
 float Ui::textWidth(Face f, const char* string) const {
     const TypeFace& t = face(f);
     return MeasureTextEx(t.font, string, t.size, t.spacing).x;
@@ -115,6 +198,10 @@ float Ui::hoverAmount(const void* id, bool hovered) {
 void Ui::drawIcon(Icon icon, Vec2 c, const Col& col) {
     Canvas& k = *canvas_;
     switch (icon) {
+        case Icon::Inspect:
+            k.ring(c + Vec2{-1.5f, -1.5f}, 5.6f, 1.5f, col, 0.8f);
+            k.line(c + Vec2{2.6f, 2.6f}, c + Vec2{7.0f, 7.0f}, 2.2f, col, 0.8f);
+            break;
         case Icon::Grab: {
             const Vec2 tip = c + Vec2{-4.5f, -7.5f};
             const Vec2 left = c + Vec2{-4.5f, 5.5f};
@@ -125,31 +212,13 @@ void Ui::drawIcon(Icon icon, Vec2 c, const Col& col) {
             k.line(notch, c + Vec2{2.0f, 7.5f}, 2.0f, col);
             break;
         }
-        case Icon::Ball: k.disc(c, 7.5f, col); break;
-        case Icon::Box: k.roundedRect(c.x - 7.0f, c.y - 7.0f, 14.0f, 14.0f, 2.5f, col); break;
-        case Icon::Gem: {
-            Vec2 pts[6];
-            for (int i = 0; i < 6; ++i) {
-                const float a = kPi / 6.0f + static_cast<float>(i) * kPi / 3.0f;
-                pts[i] = c + Vec2{std::cos(a), std::sin(a)} * 8.2f;
+        case Icon::Throw: {
+            k.disc(c + Vec2{3.0f, -2.5f}, 4.6f, col);
+            for (int i = 0; i < 3; ++i) {
+                const float y = -1.0f + static_cast<float>(i) * 3.2f;
+                k.line(c + Vec2{-8.0f + static_cast<float>(i) * 1.2f, y + 1.8f}, c + Vec2{-2.6f, y - 0.4f}, 1.2f,
+                       withAlpha(col, col.a * (0.9f - 0.2f * static_cast<float>(i))), 0.8f);
             }
-            for (int i = 0; i < 6; ++i) k.triangleFilled(c, pts[i], pts[(i + 1) % 6], col);
-            break;
-        }
-        case Icon::Bomb: {
-            k.disc(c, 3.2f, col);
-            for (int i = 0; i < 8; ++i) {
-                const float a = static_cast<float>(i) * kPi / 4.0f;
-                const Vec2 d{std::cos(a), std::sin(a)};
-                const float outer = i % 2 == 0 ? 9.0f : 7.0f;
-                k.line(c + d * 5.2f, c + d * outer, 1.4f, col, 0.8f);
-            }
-            break;
-        }
-        case Icon::Pull: {
-            k.disc(c, 2.4f, col);
-            k.ring(c, 5.4f, 1.2f, withAlpha(col, col.a * 0.8f), 0.8f);
-            k.ring(c, 8.6f, 1.2f, withAlpha(col, col.a * 0.45f), 0.8f);
             break;
         }
         case Icon::Play:
@@ -176,6 +245,22 @@ void Ui::drawIcon(Icon icon, Vec2 c, const Col& col) {
             k.triangleFilled(head + Vec2{4.5f, 1.0f}, head + Vec2{-3.0f, -3.0f}, head + Vec2{-2.0f, 3.2f}, col);
             break;
         }
+        case Icon::Slow: {
+            // An hourglass.
+            k.line(c + Vec2{-5.5f, -7.5f}, c + Vec2{5.5f, -7.5f}, 1.4f, col, 0.8f);
+            k.line(c + Vec2{-5.5f, 7.5f}, c + Vec2{5.5f, 7.5f}, 1.4f, col, 0.8f);
+            k.triangleFilled(c + Vec2{-4.5f, -6.0f}, c + Vec2{4.5f, -6.0f}, c + Vec2{0.0f, 0.0f}, withAlpha(col, col.a * 0.55f));
+            k.triangleFilled(c + Vec2{0.0f, 0.0f}, c + Vec2{4.5f, 6.0f}, c + Vec2{-4.5f, 6.0f}, col);
+            break;
+        }
+        case Icon::Vectors: {
+            const Vec2 from = c + Vec2{-6.5f, 6.5f};
+            const Vec2 to = c + Vec2{6.0f, -6.0f};
+            k.line(from, to + Vec2{-2.8f, 2.8f}, 1.6f, col, 0.8f);
+            k.triangleFilled(to, to + Vec2{-7.0f, 1.2f}, to + Vec2{-1.2f, 7.0f}, col);
+            k.disc(from, 2.0f, col);
+            break;
+        }
         case Icon::Settings: {
             const float rows[3] = {-5.5f, 0.0f, 5.5f};
             const float knobs[3] = {3.0f, -3.5f, 1.0f};
@@ -189,7 +274,7 @@ void Ui::drawIcon(Icon icon, Vec2 c, const Col& col) {
 }
 
 bool Ui::iconButton(const void* id, Box2 box, Icon icon, bool isActive, const char* tooltip) {
-    const bool hovered = box.contains(mouse_);
+    const bool hovered = hit(box);
     const float hover = hoverAmount(id, hovered);
     if (hovered && pressed_) active_ = id;
     const bool clicked = hovered && released_ && active_ == id;
@@ -212,7 +297,7 @@ bool Ui::iconButton(const void* id, Box2 box, Icon icon, bool isActive, const ch
 }
 
 bool Ui::listItem(const void* id, Box2 box, const char* label, const char* key, bool selected) {
-    const bool hovered = box.contains(mouse_);
+    const bool hovered = hit(box);
     const float hover = hoverAmount(id, hovered);
     if (hovered && pressed_) active_ = id;
     const bool clicked = hovered && released_ && active_ == id;
@@ -237,12 +322,11 @@ bool Ui::listItem(const void* id, Box2 box, const char* label, const char* key, 
 
 bool Ui::slider(const void* id, Box2 box, const char* label, const char* valueText, float& value, float lo, float hi) {
     text(Face::Label, label, box.x, box.y, kInkDim);
-    const float vw = textWidth(Face::Mono, valueText);
-    text(Face::Mono, valueText, box.x + box.w - vw, box.y + 1.5f, kInk);
+    const float vw = textWidth(Face::Label, valueText);
+    text(Face::Label, valueText, box.x + box.w - vw, box.y, kInk);
 
     const float trackY = box.y + 26.0f;
-    const Box2 hit{box.x - 4.0f, trackY - 9.0f, box.w + 8.0f, 18.0f};
-    const bool hovered = hit.contains(mouse_);
+    const bool hovered = hit({box.x - 4.0f, trackY - 9.0f, box.w + 8.0f, 18.0f});
     const float hover = hoverAmount(id, hovered || active_ == id);
     if (hovered && pressed_) active_ = id;
 
@@ -265,7 +349,7 @@ bool Ui::slider(const void* id, Box2 box, const char* label, const char* valueTe
 }
 
 bool Ui::toggle(const void* id, Box2 box, const char* label, const char* key, bool& on) {
-    const bool hovered = box.contains(mouse_);
+    const bool hovered = hit(box);
     const float hover = hoverAmount(id, hovered);
     float& slide = slide_[id];
     slide += ((on ? 1.0f : 0.0f) - slide) * (1.0f - std::exp(-dt_ * 20.0f));
@@ -284,6 +368,45 @@ bool Ui::toggle(const void* id, Box2 box, const char* label, const char* key, bo
     canvas_->roundedRect(x, y, w, h, 8.0f, mix(uiHex(0xFFFFFF, 0.14f), accent_, slide));
     canvas_->disc({x + 8.0f + (w - 16.0f) * slide, y + h * 0.5f}, 6.0f, uiHex(0xFFFFFF));
     canvas_->end();
+    return clicked;
+}
+
+bool Ui::tab(const void* id, Box2 box, const char* label, bool selected) {
+    const bool hovered = hit(box);
+    const float hover = hoverAmount(id, hovered);
+    if (hovered && pressed_) active_ = id;
+    const bool clicked = hovered && released_ && active_ == id;
+
+    canvas_->begin();
+    if (selected) {
+        canvas_->roundedRect(box.x, box.y, box.w, box.h, 8.0f, withAlpha(accent_, 0.2f));
+        canvas_->roundedRectStroke(box.x + 0.5f, box.y + 0.5f, box.w - 1.0f, box.h - 1.0f, 7.5f, 0.8f, withAlpha(accent_, 0.45f));
+    } else if (hover > 0.01f) {
+        canvas_->roundedRect(box.x, box.y, box.w, box.h, 8.0f, uiHex(0xFFFFFF, 0.07f * hover));
+    }
+    canvas_->end();
+    const Face f = selected ? Face::Strong : Face::Label;
+    const float w = textWidth(f, label);
+    text(f, label, box.x + (box.w - w) * 0.5f, box.y + (box.h - lineHeight(f)) * 0.5f + 0.5f,
+         selected ? kInk : withAlpha(kInk, 0.62f + 0.3f * hover));
+    return clicked;
+}
+
+bool Ui::link(const void* id, float x, float y, const char* label) {
+    const float w = textWidth(Face::Caption, label);
+    const Box2 box{x - 3.0f, y - 2.0f, w + 6.0f, lineHeight(Face::Caption) + 4.0f};
+    const bool hovered = hit(box);
+    const float hover = hoverAmount(id, hovered);
+    if (hovered && pressed_) active_ = id;
+    const bool clicked = hovered && released_ && active_ == id;
+    const Col colour = mix(accent_, kInk, 0.35f + 0.4f * hover);
+    text(Face::Caption, label, x, y, colour);
+    if (hover > 0.01f) {
+        canvas_->begin();
+        canvas_->line({x, y + lineHeight(Face::Caption) - 0.5f}, {x + w, y + lineHeight(Face::Caption) - 0.5f}, 0.6f,
+                      withAlpha(colour, hover * colour.a), 0.6f);
+        canvas_->end();
+    }
     return clicked;
 }
 

@@ -1,4 +1,4 @@
-// A small immediate-mode UI: frosted panels, icon buttons, sliders and toggles.
+// A small immediate-mode UI: frosted panels, wrapped text, tabs, icon buttons, sliders and toggles.
 #pragma once
 
 #include <unordered_map>
@@ -10,9 +10,9 @@
 
 namespace gfx {
 
-enum class Icon { Grab, Ball, Box, Gem, Bomb, Pull, Play, Pause, Step, Reset, Settings };
+enum class Icon { Inspect, Grab, Throw, Play, Pause, Step, Reset, Slow, Vectors, Settings };
 
-enum class Face { Body, Label, Strong, Title, Mono };
+enum class Face { Body, Label, Strong, Title, Mono, Heading, Equation, Small, Caption };
 
 // One frame of pointer state, from the real mouse or from a test script.
 struct Pointer {
@@ -46,13 +46,28 @@ public:
 
     void panel(Box2 box, float radius);
     void text(Face face, const char* string, float x, float y, Col colour);
+    // Text with a soft dark outline, for labels drawn straight over the scene.
+    void textOverScene(Face face, const char* string, float x, float y, Col colour);
     float textWidth(Face face, const char* string) const;
     float lineHeight(Face face) const;
+
+    // Word-wrapped text; a newline starts a new line. Returns the height used. With `draw`
+    // false it only measures.
+    float paragraph(Face face, const char* string, float x, float y, float width, Col colour,
+                    float leading = 1.5f, bool draw = true);
+
+    // Everything drawn between these is cut off outside `box`, and doesn't respond to the
+    // pointer there either.
+    void beginClip(Box2 box);
+    void endClip();
 
     bool iconButton(const void* id, Box2 box, Icon icon, bool active, const char* tooltip);
     bool listItem(const void* id, Box2 box, const char* label, const char* key, bool selected);
     bool slider(const void* id, Box2 box, const char* label, const char* valueText, float& value, float lo, float hi);
     bool toggle(const void* id, Box2 box, const char* label, const char* key, bool& on);
+    bool tab(const void* id, Box2 box, const char* label, bool selected);
+    // A small text button. Returns true when clicked.
+    bool link(const void* id, float x, float y, const char* label);
     void divider(float x, float y, float height);
 
     void endFrame();
@@ -65,6 +80,7 @@ private:
     };
 
     float hoverAmount(const void* id, bool hovered);
+    bool hit(Box2 box) const;
     void drawIcon(Icon icon, Vec2 c, const Col& colour);
     const TypeFace& face(Face f) const { return faces_[static_cast<int>(f)]; }
 
@@ -80,7 +96,9 @@ private:
     bool released_ = false;
     const void* active_ = nullptr;
 
-    TypeFace faces_[5];
+    TypeFace faces_[9];
+    Box2 clip_;
+    bool clipping_ = false;
     std::unordered_map<const void*, float> hover_;
     std::unordered_map<const void*, float> slide_;
     std::vector<Box2> panels_;

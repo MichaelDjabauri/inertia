@@ -468,12 +468,84 @@ void Painter::drawTerrainRim(Canvas& canvas, const std::vector<Vec2>& terrain, c
     }
 }
 
-void Painter::drawGuides(Canvas& canvas, const std::vector<scene::Guide>& guides) {
+void Painter::drawGuides(Canvas& canvas, const std::vector<scene::Guide>& guides, bool fills) {
     for (const scene::Guide& guide : guides) {
+        if (guide.points.size() < 2 || guide.fill != fills) continue;
+        const Col colour = linearHex(guide.colour, guide.alpha);
         scratch_.clear();
         for (const Vec2 p : guide.points) scratch_.push_back(view_.toPixels(p));
-        canvas.polyline(scratch_.data(), static_cast<int>(scratch_.size()), 0.8f * dpi_,
-                        linearHex(guide.colour, guide.alpha), dpi_);
+
+        if (guide.fill) {
+            // A fan from the first point. Drawn as separate triangles, so it isn't closed up.
+            // Plain triangles: feathered edges would leave seams between the slices.
+            for (size_t i = 1; i + 1 < scratch_.size(); ++i) {
+                canvas.triangle(scratch_[0], colour, scratch_[i], colour, scratch_[i + 1], colour);
+            }
+            continue;
+        }
+        if (!guide.dashed) {
+            canvas.polyline(scratch_.data(), static_cast<int>(scratch_.size()), 0.8f * dpi_, colour, dpi_);
+            continue;
+        }
+
+        // Dashes keep the same length on screen, whatever the zoom. Each step uses up what is
+        // left of the current dash or gap, or of the segment, so it always moves forward.
+        const float on = 6.0f * dpi_;
+        const float off = 5.0f * dpi_;
+        bool drawing = true;
+        float left = on;
+        for (size_t i = 0; i + 1 < scratch_.size(); ++i) {
+            const Vec2 a = scratch_[i];
+            const float segment = phys::length(scratch_[i + 1] - a);
+            if (segment < 1e-3f) continue;
+            const Vec2 dir = (scratch_[i + 1] - a) * (1.0f / segment);
+            float travelled = 0.0f;
+            while (segment - travelled > 1e-3f) {
+                const float run = std::min(left, segment - travelled);
+                if (drawing) canvas.line(a + dir * travelled, a + dir * (travelled + run), 0.8f * dpi_, colour, dpi_);
+                travelled += run;
+                left -= run;
+                if (left <= 1e-3f) {
+                    drawing = !drawing;
+                    left = drawing ? on : off;
+                }
+            }
+        }
+    }
+}
+
+Vec2 Painter::anchor(const phys::World& world, int body, Vec2 offset) const {
+    if (body < 0 || body >= static_cast<int>(world.bodies().size()) || !world.bodies()[body].alive) return offset;
+    return interpolated(world.bodies()[body]) + offset;
+}
+
+void Painter::drawArrows(Canvas& canvas, const phys::World& world, const std::vector<scene::Arrow>& arrows) {
+    for (const scene::Arrow& arrow : arrows) {
+        const Vec2 base = anchor(world, arrow.body, arrow.from);
+        const Vec2 from = view_.toPixels(base);
+        const Vec2 to = view_.toPixels(base + arrow.vec);
+        const float len = phys::length(to - from);
+        if (len < 3.0f * dpi_) continue;
+        const Vec2 dir = (to - from) * (1.0f / len);
+        const Vec2 side = phys::perpLeft(dir);
+        const float head = std::min(9.0f * dpi_, len * 0.45f);
+        const Col colour = linearHex(arrow.colour, 0.95f);
+        canvas.line(from, to - dir * (head * 0.75f), 1.4f * dpi_, colour, dpi_);
+        canvas.triangleFilled(to, to - dir * head + side * (head * 0.48f), to - dir * head - side * (head * 0.48f), colour);
+    }
+}
+
+void Painter::drawMarkers(Canvas& canvas, const phys::World& world, const std::vector<scene::Marker>& markers) {
+    for (const scene::Marker& m : markers) {
+        if (m.radius <= 0.0f) continue;
+        const Vec2 p = view_.toPixels(anchor(world, m.body, m.at));
+        const float r = std::max(m.radius * view_.pixelsPerMetre, 2.5f * dpi_);
+        const Col colour = linearHex(m.colour);
+        if (m.ring) {
+            canvas.ring(p, r, 1.0f * dpi_, colour, dpi_);
+        } else {
+            canvas.disc(p, r, colour, dpi_);
+        }
     }
 }
 

@@ -1,4 +1,4 @@
-// Ties it together: input, the fixed-step loop, the render passes and the HUD.
+// Ties it together: input, the fixed-step loop, the render passes and the lesson interface.
 #pragma once
 
 #include <string>
@@ -19,6 +19,7 @@ struct Options {
     std::string shotPath;     // screenshot taken on the last frame
     bool hideUi = false;
     bool showSettings = false;
+    bool experimentTab = false;  // open the lesson on its Experiment tab
     std::string toolName;
     bool benchmark = false;
     float renderScale = 0.0f;  // scene pixels per window pixel; 0 means automatic
@@ -34,7 +35,7 @@ public:
     int run();
 
 private:
-    enum class Drag { None, Body, Pan, Aim, Pull };
+    enum class Drag { None, Body, Pan, Aim };
 
     void openWindow();
     void followCanvas();
@@ -42,6 +43,7 @@ private:
     gfx::Vec2 screenPoints() const;
     void loadScene(int index);
     void reset();
+    void changeScene(int index);
     void frame();
     void parseScript(const std::string& text);
     void readScript();
@@ -55,12 +57,30 @@ private:
     void updateCamera(float dt);
     void render();
     void drawOverlay();
-    void drawHud();
-    void spawnFromTool(gfx::Vec2 at, gfx::Vec2 velocity);
+    void throwBody(gfx::Vec2 at, gfx::Vec2 velocity);
     float fitScale() const;
-    float stageInset() const;
+    float stageLeft() const;
+    float stageRight() const;
     void resizeTargets();
     void adaptResolution(float dt);
+    const phys::Body* selectedBody() const;
+
+    // The interface, drawn in UI points over the finished scene.
+    void drawHud();
+    void drawCurriculum(float screenH);
+    void drawLesson(float x, float y, float w, float h);
+    float drawLearn(float x, float y, float w);
+    float drawExperiment(float x, float y, float w);
+    float plotHeight() const;
+    float instrumentsHeight() const;
+    void drawInstruments(float x, float y, float w, float h);
+    void drawPlot(gfx::Box2 box);
+    void drawSceneLabels();
+    void drawInspector(float x, float y);
+    void drawDock(float screenW, float screenH);
+    void drawSettings(gfx::Box2 anchor);
+    float sectionHeading(const char* label, float x, float y);
+    gfx::Vec2 toScreen(gfx::Vec2 world) const;
 
     Options options_;
     bool capture_ = false;
@@ -71,6 +91,14 @@ private:
     int pendingScene_ = -1;
     float fade_ = 0.0f;
     bool fadingOut_ = false;
+
+    // What the learner has set each lesson's controls to, so they survive restarts.
+    std::vector<std::vector<float>> lessonValues_;
+    bool paramsDirty_ = false;
+    int lessonTab_ = 0;  // 0 Learn, 1 Experiment
+    float lessonScroll_ = 0.0f;
+    float lessonContent_ = 0.0f;
+    gfx::Box2 lessonScrollBox_;
 
     gfx::Pipeline pipeline_;
     gfx::Canvas canvas_;
@@ -98,30 +126,32 @@ private:
     bool showUi_ = true;
     bool showSettings_ = false;
     bool trailsOn_ = true;
-    bool sparksOn_ = true;
+    bool sparksOn_ = false;
     bool bloomOn_ = true;
     bool debugOn_ = false;
     bool heatView_ = false;
+    bool vectorsOn_ = true;
+    bool slowMotion_ = false;
     float timeScale_ = 1.0f;
-    float gravityScale_ = 1.0f;
-    float bounce_ = 0.0f;
+    float gravity_ = 10.0f;  // m/s², for lessons that have gravity
     float substepSetting_ = 6.0f;
 
     scene::Tool tool_ = scene::Tool::Grab;
     Drag drag_ = Drag::None;
     int mouseJoint_ = -1;
     int grabbedBody_ = -1;
+    int selected_ = -1;
+    uint32_t selectedSerial_ = 0;
     gfx::Vec2 mouseWorld_;
     gfx::Vec2 aimStart_;
     gfx::Vec2 panStartWorld_;
-    float pullPulse_ = 0.0f;
-    float lastRingTime_ = -1.0f;
 
     gfx::Vec2 cameraPan_;
     float userZoom_ = 1.0f;
     gfx::Vec2 cameraFollow_;
     float insetAnim_ = 1.0f;
-    scene::Input input_;
+    float plotLo_ = 0.0f;  // the plot's vertical range, eased so it doesn't jump
+    float plotHi_ = 1.0f;
     gfx::Pointer pointer_;
 
     struct ScriptEvent {
